@@ -7,33 +7,14 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 
-	"github.com/sourcegraph/sourcegraph/internal/api"
 	"github.com/sourcegraph/sourcegraph/internal/conf"
 	"github.com/sourcegraph/sourcegraph/internal/conf/conftypes"
 	proto "github.com/sourcegraph/sourcegraph/internal/gitserver/v1"
 	internalgrpc "github.com/sourcegraph/sourcegraph/internal/grpc"
 	"github.com/sourcegraph/sourcegraph/schema"
 )
-
-func TestClientSource_AddrMatchesTarget(t *testing.T) {
-	source := NewTestClientSource(t, []string{"localhost:1234", "localhost:4321"})
-	testGitserverConns := source.(*testGitserverConns)
-	conns := GitserverConns(*testGitserverConns.conns)
-
-	for _, repo := range []api.RepoName{"a", "b", "c", "d"} {
-		addr := source.AddrForRepo("test", repo)
-		conn, err := conns.ConnForRepo("test", repo)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if addr != conn.Target() {
-			t.Fatalf("expected addr (%q) to equal target (%q)", addr, conn.Target())
-		}
-	}
-}
 
 // mockGitserver implements both a gRPC server and an HTTP server that just tracks
 // whether or not it was called.
@@ -42,9 +23,9 @@ type mockGitserver struct {
 	proto.UnimplementedGitserverServiceServer
 }
 
-func (m *mockGitserver) Exec(*proto.ExecRequest, proto.GitserverService_ExecServer) error {
+func (m *mockGitserver) ResolveRevision(ctx context.Context, req *proto.ResolveRevisionRequest) (*proto.ResolveRevisionResponse, error) {
 	m.called = true
-	return nil
+	return &proto.ResolveRevisionResponse{}, nil
 }
 
 func (m *mockGitserver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -75,8 +56,9 @@ func TestClient_GRPCRouting(t *testing.T) {
 			},
 		},
 	})
+	t.Cleanup(func() { conf.Mock(nil) })
 
-	client := NewClient()
+	client := NewClient("test")
 	_, _ = client.ResolveRevision(context.Background(), "a", "HEAD", ResolveRevisionOptions{})
 
 	if !(m1.called && !m2.called) {
@@ -88,40 +70,5 @@ func TestClient_GRPCRouting(t *testing.T) {
 
 	if !(!m1.called && m2.called) {
 		t.Fatalf("expected repo 'b' to hit srv2, got %v, %v", m1.called, m2.called)
-	}
-}
-
-func TestClient_AddrForRepo_UsesConfToRead_PinnedRepos(t *testing.T) {
-	client := NewClient()
-
-	cfg := newConfig(
-		[]string{"gitserver1", "gitserver2"},
-		map[string]string{"repo1": "gitserver2"},
-	)
-	conns.update(cfg)
-
-	addr := client.AddrForRepo("repo1")
-	require.Equal(t, "gitserver2", addr)
-
-	// simulate config change - site admin manually changes the pinned repo config
-	cfg = newConfig(
-		[]string{"gitserver1", "gitserver2"},
-		map[string]string{"repo1": "gitserver1"},
-	)
-	conns.update(cfg)
-
-	require.Equal(t, "gitserver1", client.AddrForRepo("repo1"))
-}
-
-func newConfig(addrs []string, pinned map[string]string) *conf.Unified {
-	return &conf.Unified{
-		ServiceConnectionConfig: conftypes.ServiceConnections{
-			GitServers: addrs,
-		},
-		SiteConfiguration: schema.SiteConfiguration{
-			ExperimentalFeatures: &schema.ExperimentalFeatures{
-				GitServerPinnedRepos: pinned,
-			},
-		},
 	}
 }

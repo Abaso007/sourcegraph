@@ -1,6 +1,5 @@
-import { escapeMarkdown, pluralize } from '@sourcegraph/common'
-
 import { parseMarkdown } from '../chat/markdown'
+import { escapeMarkdown, pluralize } from '../common'
 import { isError } from '../utils'
 
 export interface Attribution {
@@ -24,7 +23,6 @@ interface AnnotatedText {
 
 /**
  * Returns markdown text with attribution information added in.
- *
  * @param guardrails client to use to lookup if a snippet of codes attributions
  * @param text markdown text
  */

@@ -1,8 +1,7 @@
-import { isErrorLike } from '@sourcegraph/common'
+import { isErrorLike } from '../common'
+import type { SourcegraphGraphQLAPIClient } from '../sourcegraph-api/graphql'
 
-import { SourcegraphGraphQLAPIClient } from '../sourcegraph-api/graphql'
-
-import { UnifiedContextFetcher, UnifiedContextFetcherResult } from '.'
+import type { UnifiedContextFetcher, UnifiedContextFetcherResult } from '.'
 
 export class UnifiedContextFetcherClient implements UnifiedContextFetcher {
     constructor(private client: SourcegraphGraphQLAPIClient, private repoIds: string[]) {}
@@ -19,8 +18,9 @@ export class UnifiedContextFetcherClient implements UnifiedContextFetcher {
         }
 
         return response.reduce((results, result) => {
-            if (result) {
+            if (result?.__typename === 'FileChunkContext') {
                 results.push({
+                    type: 'FileChunkContext',
                     filePath: result.blob.path,
                     content: result.chunkContent,
                     startLine: result.startLine,
@@ -28,6 +28,8 @@ export class UnifiedContextFetcherClient implements UnifiedContextFetcher {
                     repoName: result.blob.repository.name,
                     revision: result.blob.commit.oid,
                 })
+            } else {
+                results.push({ type: 'UnknownContext' })
             }
 
             return results

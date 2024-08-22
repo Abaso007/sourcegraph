@@ -62,12 +62,12 @@ var (
 )
 
 func (h *handler) Handle(ctx context.Context) error {
-	indexed, err := search.ListAllIndexed(ctx)
+	indexed, err := search.ListAllIndexed(ctx, search.Indexed())
 	if err != nil {
 		return err
 	}
 
-	return h.db.ZoektRepos().UpdateIndexStatuses(ctx, indexed.Minimal) //nolint:staticcheck // See https://github.com/sourcegraph/sourcegraph/issues/45814
+	return h.db.ZoektRepos().UpdateIndexStatuses(ctx, indexed.ReposMap)
 }
 
 func (h *handler) HandleError(err error) {

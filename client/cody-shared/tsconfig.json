@@ -2,11 +2,9 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "module": "commonjs",
-    "rootDir": ".",
     "sourceRoot": "src",
-    "outDir": "out",
+    "rootDir": ".",
+    "outDir": "./out",
   },
-  "include": ["**/*", ".*", "package.json"],
-  "exclude": ["out"],
-  "references": [{ "path": "../common" }, { "path": "../http-client" }],
+  "include": ["src", "./src/**/*.json"],
 }

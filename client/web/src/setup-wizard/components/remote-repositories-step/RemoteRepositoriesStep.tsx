@@ -1,27 +1,28 @@
-import { FC, HTMLAttributes, useState, useEffect } from 'react'
+import { type FC, type HTMLAttributes, useState, useEffect } from 'react'
 
 import { useQuery } from '@apollo/client'
 import classNames from 'classnames'
 import { Routes, Route, matchPath, useLocation } from 'react-router-dom'
 
-import { TelemetryProps } from '@sourcegraph/shared/src/telemetry/telemetryService'
+import type { TelemetryV2Props } from '@sourcegraph/shared/src/telemetry'
+import type { TelemetryProps } from '@sourcegraph/shared/src/telemetry/telemetryService'
 import { Container, Text } from '@sourcegraph/wildcard'
 
-import { GetCodeHostsResult } from '../../../graphql-operations'
+import type { GetCodeHostsResult } from '../../../graphql-operations'
 import { CodeHostExternalServiceAlert } from '../CodeHostExternalServiceAlert'
 import { ProgressBar } from '../ProgressBar'
 import { FooterWidget, CustomNextButton } from '../setup-steps'
 
-import { CodeHostDeleteModal, CodeHostToDelete } from './components/code-host-delete-modal'
+import { CodeHostDeleteModal, type CodeHostToDelete } from './components/code-host-delete-modal'
 import { CodeHostsPicker } from './components/code-host-picker'
 import { CodeHostCreation, CodeHostEdit } from './components/code-hosts'
 import { CodeHostsNavigation } from './components/navigation'
-import { getNextButtonLabel, getNextButtonLogEvent, isAnyConnectedCodeHosts } from './helpers'
+import { getNextButtonLabel, isAnyConnectedCodeHosts, logEventOnNextButton } from './helpers'
 import { GET_CODE_HOSTS } from './queries'
 
 import styles from './RemoteRepositoriesStep.module.scss'
 
-interface RemoteRepositoriesStepProps extends TelemetryProps, HTMLAttributes<HTMLDivElement> {
+interface RemoteRepositoriesStepProps extends TelemetryProps, TelemetryV2Props, HTMLAttributes<HTMLDivElement> {
     baseURL: string
     description?: boolean
     progressBar?: boolean
@@ -30,6 +31,7 @@ interface RemoteRepositoriesStepProps extends TelemetryProps, HTMLAttributes<HTM
 export const RemoteRepositoriesStep: FC<RemoteRepositoriesStepProps> = ({
     className,
     telemetryService,
+    telemetryRecorder,
     baseURL,
     description = true,
     progressBar = true,
@@ -37,7 +39,6 @@ export const RemoteRepositoriesStep: FC<RemoteRepositoriesStepProps> = ({
 }) => {
     const location = useLocation()
     const [codeHostToDelete, setCodeHostToDelete] = useState<CodeHostToDelete | null>(null)
-
     const editConnectionRouteMatch = matchPath(`${baseURL}/:codehostId/edit`, location.pathname)
     const newConnectionRouteMatch = matchPath(`${baseURL}/:codeHostType/create`, location.pathname)
 
@@ -50,15 +51,11 @@ export const RemoteRepositoriesStep: FC<RemoteRepositoriesStepProps> = ({
 
     useEffect(() => {
         telemetryService.log('SetupWizardLandedAddRemoteCode')
-    }, [telemetryService])
+        telemetryRecorder.recordEvent('setupWizard.addRemoteRepos', 'view')
+    }, [telemetryService, telemetryRecorder])
 
-    const handleNextButtonClick = (): void => {
-        const logEvent = getNextButtonLogEvent(codeHostQueryResult.data)
-
-        if (logEvent) {
-            telemetryService.log(logEvent)
-        }
-    }
+    const handleNextButtonClick = (): void =>
+        logEventOnNextButton({ telemetryRecorder, telemetryService, data: codeHostQueryResult.data })
 
     return (
         <div {...attributes} className={classNames(className, styles.root)}>
@@ -82,13 +79,19 @@ export const RemoteRepositoriesStep: FC<RemoteRepositoriesStepProps> = ({
                         <Route index={true} element={<CodeHostsPicker />} />
                         <Route
                             path=":codeHostType/create"
-                            element={<CodeHostCreation telemetryService={telemetryService} />}
+                            element={
+                                <CodeHostCreation
+                                    telemetryService={telemetryService}
+                                    telemetryRecorder={telemetryRecorder}
+                                />
+                            }
                         />
                         <Route
                             path=":codehostId/edit"
                             element={
                                 <CodeHostEdit
                                     telemetryService={telemetryService}
+                                    telemetryRecorder={telemetryRecorder}
                                     onCodeHostDelete={setCodeHostToDelete}
                                 />
                             }

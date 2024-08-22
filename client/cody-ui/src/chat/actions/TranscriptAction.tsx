@@ -5,7 +5,7 @@ import classNames from 'classnames'
 
 import { Icon } from '../../utils/Icon'
 
-import styles from './TranscriptAction.module.css'
+import styles from './TranscriptAction.module.scss'
 
 export interface TranscriptActionStep {
     verb: string
@@ -13,7 +13,6 @@ export interface TranscriptActionStep {
 
     /**
      * The SVG path of an icon.
-     *
      * @example mdiSearchWeb
      */
     icon?: string

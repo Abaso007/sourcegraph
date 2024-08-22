@@ -1,4 +1,4 @@
-include: ./sourcegraph-base.yaml
+include: ./sourcegraph-template.yaml
 
 contents:
   packages:
@@ -7,6 +7,4 @@ contents:
     - mailcap
 
     ## batcheshelper packages
-    - 'git>=2.38.1'
-
-# MANUAL REBUILD: Thu Jun 22 13:43:35 BST 2023
+    - 'git'

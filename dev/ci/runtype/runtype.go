@@ -13,25 +13,23 @@ type RunType int
 const (
 	// RunTypes should be defined by order of precedence.
 
-	PullRequest    RunType = iota // pull request build
-	WolfiExpBranch                // branch that only builds wolfi images
+	PullRequest       RunType = iota // pull request build
+	ManuallyTriggered                // build that is manually triggred - typically used to start CI for external contributions
 
-	// Nightly builds - must be first because they take precedence
-
-	ReleaseNightly // release branch nightly healthcheck builds
-	BextNightly    // browser extension nightly build
-	VsceNightly    // vs code extension nightly build
-	CodyNightly    // cody vs code extension nightly build
-	AppRelease     // app release build
-	AppInsiders    // app insiders build
+	BextNightly       // browser extension nightly build
+	BextManualNightly // browser extension nightly build, triggered with a branch pattern
+	VsceNightly       // vs code extension nightly build
+	WolfiBaseRebuild  // wolfi base image build
 
 	// Release branches
+	InternalRelease // Internal release
+	PromoteRelease  // Public release
 
-	TaggedRelease     // semver-tagged release
-	ReleaseBranch     // release branch build
-	BextReleaseBranch // browser extension release build
-	VsceReleaseBranch // vs code extension release build
-	CodyReleaseBranch // cody extension release build
+	TaggedRelease      // semver-tagged release
+	ReleaseBranch      // release branch build
+	PatchReleaseBranch // patch release branch build
+	BextReleaseBranch  // browser extension release build
+	VsceReleaseBranch  // vs code extension release build
 
 	// Main branches
 
@@ -43,10 +41,11 @@ const (
 	ImagePatch          // build a patched image after testing
 	ImagePatchNoTest    // build a patched image without testing
 	ExecutorPatchNoTest // build executor image without testing
+	CandidatesNoTest    // build one or all candidate images without testing
+	DockerImages        // build, test and push images on DockerHub registry with insider tags.
+	CloudEphemeral      // build all images and push to cloud ephemeral registry for use with cloud deployment
 
-	// Special test branches
-
-	BackendIntegrationTests // run backend tests that are used on main
+	BazelDo // run a specific bazel command
 
 	// None is a no-op, add all run types above this type.
 	None
@@ -85,10 +84,22 @@ func (t RunType) Is(oneOfTypes ...RunType) bool {
 // Matcher returns the requirements for a build to be considered of this RunType.
 func (t RunType) Matcher() *RunTypeMatcher {
 	switch t {
-	case ReleaseNightly:
+	case PromoteRelease:
 		return &RunTypeMatcher{
 			EnvIncludes: map[string]string{
-				"RELEASE_NIGHTLY": "true",
+				"RELEASE_PUBLIC": "true",
+			},
+		}
+	case InternalRelease:
+		return &RunTypeMatcher{
+			EnvIncludes: map[string]string{
+				"RELEASE_INTERNAL": "true",
+			},
+		}
+	case CloudEphemeral:
+		return &RunTypeMatcher{
+			EnvIncludes: map[string]string{
+				"CLOUD_EPHEMERAL": "true",
 			},
 		}
 	case BextNightly:
@@ -97,11 +108,9 @@ func (t RunType) Matcher() *RunTypeMatcher {
 				"BEXT_NIGHTLY": "true",
 			},
 		}
-	case CodyNightly:
+	case BextManualNightly:
 		return &RunTypeMatcher{
-			EnvIncludes: map[string]string{
-				"CODY_NIGHTLY": "true",
-			},
+			Branch: "bext-nightly/",
 		}
 	case VsceNightly:
 		return &RunTypeMatcher{
@@ -114,23 +123,12 @@ func (t RunType) Matcher() *RunTypeMatcher {
 			Branch:      "vsce/release",
 			BranchExact: true,
 		}
-	case CodyReleaseBranch:
+	case WolfiBaseRebuild:
 		return &RunTypeMatcher{
-			Branch:      "cody/release",
-			BranchExact: true,
+			EnvIncludes: map[string]string{
+				"WOLFI_BASE_REBUILD": "true",
+			},
 		}
-
-	case AppRelease:
-		return &RunTypeMatcher{
-			Branch:      "app/release",
-			BranchExact: true,
-		}
-	case AppInsiders:
-		return &RunTypeMatcher{
-			Branch:      "app/insiders",
-			BranchExact: true,
-		}
-
 	case TaggedRelease:
 		return &RunTypeMatcher{
 			TagPrefix: "v",
@@ -138,6 +136,11 @@ func (t RunType) Matcher() *RunTypeMatcher {
 	case ReleaseBranch:
 		return &RunTypeMatcher{
 			Branch:       `^[0-9]+\.[0-9]+$`,
+			BranchRegexp: true,
+		}
+	case PatchReleaseBranch:
+		return &RunTypeMatcher{
+			Branch:       `^[0-9]+\.[0-9]+\.(?:x|[0-9]+)$`,
 			BranchRegexp: true,
 		}
 	case BextReleaseBranch:
@@ -155,9 +158,9 @@ func (t RunType) Matcher() *RunTypeMatcher {
 		return &RunTypeMatcher{
 			Branch: "main-dry-run/",
 		}
-	case WolfiExpBranch:
+	case ManuallyTriggered:
 		return &RunTypeMatcher{
-			Branch: "wolfi/",
+			Branch: "_manually_triggered_external/",
 		}
 	case ImagePatch:
 		return &RunTypeMatcher{
@@ -174,10 +177,19 @@ func (t RunType) Matcher() *RunTypeMatcher {
 			Branch: "executor-patch-notest/",
 		}
 
-	case BackendIntegrationTests:
+	case CandidatesNoTest:
 		return &RunTypeMatcher{
-			Branch: "backend-integration/",
+			Branch: "docker-images-candidates-notest/",
 		}
+	case DockerImages:
+		return &RunTypeMatcher{
+			Branch: "docker-images/",
+		}
+	case BazelDo:
+		return &RunTypeMatcher{
+			Branch: "bazel-do/",
+		}
+
 	}
 
 	return nil
@@ -187,20 +199,16 @@ func (t RunType) String() string {
 	switch t {
 	case PullRequest:
 		return "Pull request"
-	case WolfiExpBranch:
-		return "Wolfi Exp Branch"
-	case ReleaseNightly:
-		return "Release branch nightly healthcheck build"
+	case ManuallyTriggered:
+		return "Manually Triggered External Build"
 	case BextNightly:
 		return "Browser extension nightly release build"
-	case CodyNightly:
-		return "Cody VS Code extension nightly release build"
+	case BextManualNightly:
+		return "Manually triggered browser extension nightly release build"
 	case VsceNightly:
 		return "VS Code extension nightly release build"
-	case AppRelease:
-		return "App release build"
-	case AppInsiders:
-		return "App insiders build"
+	case WolfiBaseRebuild:
+		return "Wolfi base images rebuild"
 	case TaggedRelease:
 		return "Tagged release"
 	case ReleaseBranch:
@@ -209,25 +217,30 @@ func (t RunType) String() string {
 		return "Browser extension release build"
 	case VsceReleaseBranch:
 		return "VS Code extension release build"
-	case CodyReleaseBranch:
-		return "Cody VS Code extension release build"
-
 	case MainBranch:
 		return "Main branch"
 	case MainDryRun:
 		return "Main dry run"
-
 	case ImagePatch:
 		return "Patch image"
 	case ImagePatchNoTest:
 		return "Patch image without testing"
+	case CandidatesNoTest:
+		return "Build all candidates without testing"
+	case DockerImages:
+		return "Build all docker images without testing"
 	case ExecutorPatchNoTest:
 		return "Build executor without testing"
-
-	case BackendIntegrationTests:
-		return "Backend integration tests"
+	case BazelDo:
+		return "Bazel command"
+	case InternalRelease:
+		return "Internal release"
+	case PromoteRelease:
+		return "Public release"
+	case CloudEphemeral:
+		return "Cloud ephemeral"
 	}
-	return ""
+	return "None"
 }
 
 // RunTypeMatcher defines the requirements for any given build to be considered a build of

@@ -3,22 +3,34 @@ export type ConfigurationUseContext = 'embeddings' | 'keyword' | 'none' | 'blend
 // Should we share VS Code specific config via cody-shared?
 export interface Configuration {
     serverEndpoint: string
+    proxy?: string | null
     codebase?: string
     debugEnable: boolean
     debugFilter: RegExp | null
     debugVerbose: boolean
+    telemetryLevel: 'all' | 'off'
     useContext: ConfigurationUseContext
     customHeaders: Record<string, string>
+    chatPreInstruction: string
     autocomplete: boolean
     experimentalChatPredictions: boolean
-    experimentalInline: boolean
+    inlineChat: boolean
+    experimentalCommandLenses: boolean
+    experimentalEditorTitleCommandIcon: boolean
     experimentalGuardrails: boolean
     experimentalNonStop: boolean
-    autocompleteAdvancedProvider: 'anthropic' | 'unstable-codegen' | 'unstable-huggingface'
+    experimentalLocalSymbols: boolean
+    experimentalSymfPath: string
+    experimentalSymfAnthropicKey: string
+    autocompleteAdvancedProvider: 'anthropic' | 'unstable-codegen' | 'unstable-fireworks' | 'unstable-openai' | null
     autocompleteAdvancedServerEndpoint: string | null
+    autocompleteAdvancedModel: string | null
     autocompleteAdvancedAccessToken: string | null
-    autocompleteAdvancedCache: boolean
     autocompleteAdvancedEmbeddings: boolean
+    autocompleteExperimentalCompleteSuggestWidgetSelection?: boolean
+    autocompleteExperimentalSyntacticPostProcessing?: boolean
+    autocompleteExperimentalGraphContext?: boolean
+    isRunningInsideAgent?: boolean
 }
 
 export interface ConfigurationWithAccessToken extends Configuration {

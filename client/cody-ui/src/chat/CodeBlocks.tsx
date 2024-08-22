@@ -2,11 +2,11 @@ import React, { useEffect, useMemo, useRef } from 'react'
 
 import classNames from 'classnames'
 
-import { renderCodyMarkdown } from '@sourcegraph/cody-shared/src/chat/markdown'
+import { renderCodyMarkdown } from '@sourcegraph/cody-shared'
 
-import { CopyButtonProps } from '../Chat'
+import type { CopyButtonProps } from '../Chat'
 
-import styles from './CodeBlocks.module.css'
+import styles from './CodeBlocks.module.scss'
 
 interface CodeBlocksProps {
     displayText: string
@@ -63,6 +63,7 @@ function createCopyButton(
     button.title = 'Copy text'
     button.className = classNames(styles.copyButton, className)
     button.addEventListener('click', () => {
+        // eslint-disable-next-line no-console
         navigator.clipboard.writeText(text).catch(error => console.error(error))
         button.textContent = 'Copied'
         setTimeout(() => (button.textContent = 'Copy'), 3000)
@@ -87,31 +88,9 @@ function createInsertButton(
     button.title = 'Insert text at current cursor position'
     button.className = classNames(styles.insertButton, className)
     button.addEventListener('click', () => {
-        const selectedText = getSelectedTextWithin(container.querySelector('pre'))
-        copyButtonOnSubmit(selectedText || text, true)
+        copyButtonOnSubmit(text, true)
     })
     return button
-}
-
-function getSelectedTextWithin(element: HTMLElement | null): string | null {
-    if (!element) {
-        return null
-    }
-
-    const selection = document.getSelection()
-    if (!selection) {
-        return null
-    }
-
-    const range = selection.getRangeAt(0)
-    const startContainer = range.startContainer
-    const endContainer = range.endContainer
-
-    if (element.contains(startContainer) && element.contains(endContainer)) {
-        return selection.toString()
-    }
-
-    return null
 }
 
 export const CodeBlocks: React.FunctionComponent<CodeBlocksProps> = React.memo(function CodeBlocksContent({

@@ -1,7 +1,7 @@
-import { parseStringPromise } from 'xml2js'
+import x2js from 'x2js'
 
-import { ChatClient } from '../chat/chat'
-import { ContextResult } from '../local-context'
+import type { ChatClient } from '../chat/chat'
+import type { ContextResult } from '../local-context'
 
 export interface Reranker {
     rerank(userQuery: string, results: ContextResult[]): Promise<ContextResult[]>
@@ -9,6 +9,7 @@ export interface Reranker {
 
 export class MockReranker implements Reranker {
     constructor(private rerank_: (userQuery: string, results: ContextResult[]) => Promise<ContextResult[]>) {}
+
     public rerank(userQuery: string, results: ContextResult[]): Promise<ContextResult[]> {
         return this.rerank_(userQuery, results)
     }
@@ -19,6 +20,7 @@ export class MockReranker implements Reranker {
  */
 export class LLMReranker implements Reranker {
     constructor(private chatClient: ChatClient) {}
+
     public async rerank(userQuery: string, results: ContextResult[]): Promise<ContextResult[]> {
         // Reverse the results so the most important appears first
         results = [...results].reverse()
@@ -57,7 +59,7 @@ export class LLMReranker implements Reranker {
         if (out.indexOf('</list>') !== out.length - '</list>'.length) {
             out = out.slice(0, out.indexOf('</list>') + '</list>'.length)
         }
-        const boostedFilenames = await parseXml(out)
+        const boostedFilenames = parseFileExplanations(out)
 
         const resultsMap = Object.fromEntries(results.map(r => [r.fileName, r]))
         const boostedNames = new Set<string>()
@@ -81,13 +83,16 @@ export class LLMReranker implements Reranker {
     }
 }
 
-async function parseXml(xml: string): Promise<string[]> {
-    const result = await parseStringPromise(xml)
-    const items = result.list.item
-    const files: { filename: string; explanation: string }[] = items.map((item: any) => ({
-        filename: item.filename[0],
-        explanation: item.explanation[0],
-    }))
-
-    return files.map(f => f.filename)
+export function parseFileExplanations(xml: string): string[] {
+    try {
+        const result = new x2js({}).xml2js<{ list: { item: [{ filename: string; explanation: string }] } }>(xml)
+        const items = result.list.item
+        const files: { filename: string; explanation: string }[] = items.map(item => ({
+            filename: item.filename,
+            explanation: item.explanation,
+        }))
+        return files.map(f => f.filename)
+    } catch {
+        return []
+    }
 }

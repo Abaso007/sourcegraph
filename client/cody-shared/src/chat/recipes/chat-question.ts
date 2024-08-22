@@ -1,7 +1,7 @@
-import { CodebaseContext } from '../../codebase-context'
-import { ContextMessage, getContextMessageWithResponse } from '../../codebase-context/messages'
-import { ActiveTextEditorSelection, Editor } from '../../editor'
-import { IntentDetector } from '../../intent-detector'
+import type { CodebaseContext } from '../../codebase-context'
+import { type ContextMessage, getContextMessageWithResponse } from '../../codebase-context/messages'
+import type { ActiveTextEditorSelection, Editor } from '../../editor'
+import type { IntentDetector } from '../../intent-detector'
 import { MAX_CURRENT_FILE_TOKENS, MAX_HUMAN_INPUT_TOKENS } from '../../prompt/constants'
 import {
     populateCurrentEditorContextTemplate,
@@ -10,10 +10,12 @@ import {
 import { truncateText } from '../../prompt/truncation'
 import { Interaction } from '../transcript/interaction'
 
-import { Recipe, RecipeContext, RecipeID } from './recipe'
+import { isSingleWord, numResults } from './helpers'
+import type { Recipe, RecipeContext, RecipeID } from './recipe'
 
 export class ChatQuestion implements Recipe {
     public id: RecipeID = 'chat-question'
+    public title = 'Chat Question'
 
     constructor(private debug: (filterLabel: string, text: string, ...args: unknown[]) => void) {}
 
@@ -46,15 +48,18 @@ export class ChatQuestion implements Recipe {
         selection: ActiveTextEditorSelection | null
     ): Promise<ContextMessage[]> {
         const contextMessages: ContextMessage[] = []
+        // If input is less than 2 words, it means it's most likely a statement or a follow-up question that does not require additional context
+        // e,g. "hey", "hi", "why", "explain" etc.
+        const isTextTooShort = isSingleWord(text)
+        if (isTextTooShort) {
+            return contextMessages
+        }
 
         const isCodebaseContextRequired = firstInteraction || (await intentDetector.isCodebaseContextRequired(text))
 
         this.debug('ChatQuestion:getContextMessages', 'isCodebaseContextRequired', isCodebaseContextRequired)
         if (isCodebaseContextRequired) {
-            const codebaseContextMessages = await codebaseContext.getContextMessages(text, {
-                numCodeResults: 12,
-                numTextResults: 3,
-            })
+            const codebaseContextMessages = await codebaseContext.getCombinedContextMessages(text, numResults)
             contextMessages.push(...codebaseContextMessages)
         }
 

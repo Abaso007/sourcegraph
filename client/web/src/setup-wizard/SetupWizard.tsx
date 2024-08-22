@@ -1,10 +1,11 @@
-import { FC, useCallback, useMemo } from 'react'
+import { type FC, useCallback } from 'react'
 
-import { ApolloClient } from '@apollo/client'
+import type { ApolloClient } from '@apollo/client'
 import { useNavigate } from 'react-router-dom'
 
 import { useTemporarySetting } from '@sourcegraph/shared/src/settings/temporary'
-import { TelemetryProps } from '@sourcegraph/shared/src/telemetry/telemetryService'
+import { TelemetryV2Props } from '@sourcegraph/shared/src/telemetry'
+import type { TelemetryProps } from '@sourcegraph/shared/src/telemetry/telemetryService'
 import { H1, H2, useLocalStorage } from '@sourcegraph/wildcard'
 
 import { BrandLogo } from '../components/branding/BrandLogo'
@@ -12,12 +13,11 @@ import { PageTitle } from '../components/PageTitle'
 import { refreshSiteFlags } from '../site/backend'
 
 import {
-    StepConfiguration,
+    type StepConfiguration,
     SetupStepsRoot,
     SetupStepsHeader,
     SetupStepsContent,
     SetupStepsFooter,
-    LocalRepositoriesStep,
     RemoteRepositoriesStep,
     SyncRepositoriesStep,
 } from './components'
@@ -56,22 +56,10 @@ const CORE_STEPS: StepConfiguration[] = [
     },
 ]
 
-const SOURCEGRAPH_APP_STEPS = [
-    {
-        id: 'local-repositories',
-        name: 'Add local repositories',
-        path: '/setup/local-repositories',
-        component: LocalRepositoriesStep,
-    },
-    ...CORE_STEPS,
-]
-
-interface SetupWizardProps extends TelemetryProps {
-    isSourcegraphApp: boolean
-}
+interface SetupWizardProps extends TelemetryProps, TelemetryV2Props {}
 
 export const SetupWizard: FC<SetupWizardProps> = props => {
-    const { isSourcegraphApp, telemetryService } = props
+    const { telemetryService, telemetryRecorder } = props
 
     const navigate = useNavigate()
     const [activeStepId, setStepId, status] = useTemporarySetting('setup.activeStepId')
@@ -81,7 +69,7 @@ export const SetupWizard: FC<SetupWizardProps> = props => {
     // about the setup wizard availability and redirect to the wizard if it wasn't skipped already.
     // eslint-disable-next-line no-restricted-syntax
     const [, setSkipWizardState] = useLocalStorage('setup.skipped', false)
-    const steps = useMemo(() => (isSourcegraphApp ? SOURCEGRAPH_APP_STEPS : CORE_STEPS), [isSourcegraphApp])
+    const steps = CORE_STEPS
 
     const handleStepChange = useCallback(
         (nextStep: StepConfiguration): void => {
@@ -98,8 +86,9 @@ export const SetupWizard: FC<SetupWizardProps> = props => {
     const handleSkip = useCallback(() => {
         setSkipWizardState(true)
         telemetryService.log('SetupWizardQuits')
+        telemetryRecorder.recordEvent('setupWizard', 'quit')
         navigate('/search')
-    }, [navigate, telemetryService, setSkipWizardState])
+    }, [navigate, telemetryService, telemetryRecorder, setSkipWizardState])
 
     if (status !== 'loaded') {
         return null
@@ -127,6 +116,7 @@ export const SetupWizard: FC<SetupWizardProps> = props => {
                     <SetupStepsContent
                         contentContainerClass={styles.contentContainer}
                         telemetryService={telemetryService}
+                        telemetryRecorder={telemetryRecorder}
                     />
                 </div>
 

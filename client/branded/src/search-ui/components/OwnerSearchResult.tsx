@@ -4,19 +4,23 @@ import classNames from 'classnames'
 
 import { TeamAvatar } from '@sourcegraph/shared/src/components/TeamAvatar'
 import { UserAvatar } from '@sourcegraph/shared/src/components/UserAvatar'
-import { BuildSearchQueryURLParameters, QueryState, SearchContextProps } from '@sourcegraph/shared/src/search'
+import type { BuildSearchQueryURLParameters, QueryState, SearchContextProps } from '@sourcegraph/shared/src/search'
 import { FilterKind, findFilter } from '@sourcegraph/shared/src/search/query/query'
 import { appendFilter, omitFilter } from '@sourcegraph/shared/src/search/query/transformer'
-import { getOwnerMatchUrl, OwnerMatch } from '@sourcegraph/shared/src/search/stream'
-import { TelemetryProps } from '@sourcegraph/shared/src/telemetry/telemetryService'
+import { getOwnerMatchUrl, type OwnerMatch } from '@sourcegraph/shared/src/search/stream'
+import { TelemetryV2Props } from '@sourcegraph/shared/src/telemetry'
+import type { TelemetryProps } from '@sourcegraph/shared/src/telemetry/telemetryService'
 import { Link } from '@sourcegraph/wildcard'
 
 import { ResultContainer } from './ResultContainer'
 
 import styles from './OwnerSearchResult.module.scss'
-import resultStyles from './SearchResult.module.scss'
+import resultStyles from './ResultContainer.module.scss'
 
-export interface OwnerSearchResultProps extends Pick<SearchContextProps, 'selectedSearchContextSpec'>, TelemetryProps {
+export interface OwnerSearchResultProps
+    extends Pick<SearchContextProps, 'selectedSearchContextSpec'>,
+        TelemetryProps,
+        TelemetryV2Props {
     result: OwnerMatch
     onSelect: () => void
     containerClassName?: string
@@ -38,6 +42,7 @@ export const OwnerSearchResult: React.FunctionComponent<OwnerSearchResultProps> 
     buildSearchURLQueryFromQueryState,
     selectedSearchContextSpec,
     telemetryService,
+    telemetryRecorder,
 }) => {
     const displayName = useMemo(() => {
         let displayName = ''
@@ -53,6 +58,14 @@ export const OwnerSearchResult: React.FunctionComponent<OwnerSearchResultProps> 
     const url = useMemo(() => {
         const url = getOwnerMatchUrl(result)
         const validUrlPrefixes = ['/teams/', '/users/', 'mailto:']
+        // TODO(#54209): Introduce a proper solution where a streamed team
+        // is returned with a URL if present. Temporarily return no URL
+        // in case name contains /. This indicates a Github team, and these
+        // are not linkable within code search - where / is not an allowed
+        // character for team names.
+        if (result.type === 'team' && result.name.includes('/')) {
+            return ''
+        }
         if (!validUrlPrefixes.some(prefix => url.startsWith(prefix))) {
             // This is not a real URL, remove it.
             return ''
@@ -87,12 +100,15 @@ export const OwnerSearchResult: React.FunctionComponent<OwnerSearchResultProps> 
     const logSearchOwnerClicked = (): void => {
         if (url.startsWith('mailto:')) {
             telemetryService.log('searchResults:ownershipMailto:clicked')
+            telemetryRecorder.recordEvent('search.results.ownership.mailTo', 'click')
         }
         if (url.startsWith('/users/')) {
             telemetryService.log('searchResults:ownershipUsers:clicked')
+            telemetryRecorder.recordEvent('search.results.ownership.users', 'click')
         }
         if (url.startsWith('/teams/')) {
             telemetryService.log('searchResults:ownershipTeams:clicked')
+            telemetryRecorder.recordEvent('search.results.ownership.teams', 'click')
         }
     }
 

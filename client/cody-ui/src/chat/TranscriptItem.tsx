@@ -2,21 +2,24 @@ import React, { useState } from 'react'
 
 import classNames from 'classnames'
 
-import { ChatMessage } from '@sourcegraph/cody-shared/src/chat/transcript/messages'
+import type { ChatMessage } from '@sourcegraph/cody-shared'
 
-import {
+import type {
+    ChatButtonProps,
+    ChatUISubmitButtonProps,
     ChatUITextAreaProps,
+    CopyButtonProps,
     EditButtonProps,
     FeedbackButtonsProps,
-    CopyButtonProps,
-    ChatUISubmitButtonProps,
 } from '../Chat'
 
 import { BlinkingCursor } from './BlinkingCursor'
 import { CodeBlocks } from './CodeBlocks'
-import { ContextFiles, FileLinkProps } from './ContextFiles'
+import { ContextFiles, type FileLinkProps } from './ContextFiles'
 
-import styles from './TranscriptItem.module.css'
+// import { PluginExecutionInfos } from './PluginExecutionInfos'
+
+import styles from './TranscriptItem.module.scss'
 
 /**
  * CSS class names used for the {@link TranscriptItem} component.
@@ -52,6 +55,8 @@ export const TranscriptItem: React.FunctionComponent<
         submitButtonComponent?: React.FunctionComponent<ChatUISubmitButtonProps>
         abortMessageInProgressComponent?: React.FunctionComponent<{ onAbortMessageInProgress: () => void }>
         onAbortMessageInProgress?: () => void
+        ChatButtonComponent?: React.FunctionComponent<ChatButtonProps>
+        pluginsDevMode?: boolean
     } & TranscriptItemClassNames
 > = React.memo(function TranscriptItemContent({
     message,
@@ -75,6 +80,8 @@ export const TranscriptItem: React.FunctionComponent<
     copyButtonOnSubmit,
     submitButtonComponent: SubmitButton,
     chatInputClassName,
+    ChatButtonComponent,
+    pluginsDevMode,
 }) {
     const [formInput, setFormInput] = useState<string>(message.displayText ?? '')
     const textarea =
@@ -124,6 +131,7 @@ export const TranscriptItem: React.FunctionComponent<
             )}
         >
             {/* display edit buttons on last user message, feedback buttons on last assistant message only */}
+            {/* eslint-disable-next-line react/forbid-elements */}
             {EditButtonContainer && beingEdited && <p className={classNames(styles.editingLabel)}>Editing...</p>}
             {showEditButton && EditButtonContainer && editButtonOnSubmit && TextArea && message.speaker === 'human' && (
                 <header
@@ -133,7 +141,7 @@ export const TranscriptItem: React.FunctionComponent<
                     )}
                 >
                     <EditButtonContainer
-                        className={styles.FeedbackEditButtonsContainer}
+                        className={styles.feedbackEditButtonsContainer}
                         messageBeingEdited={beingEdited}
                         setMessageBeingEdited={setBeingEdited}
                     />
@@ -148,13 +156,16 @@ export const TranscriptItem: React.FunctionComponent<
                     />
                 </div>
             )}
-            <div
-                className={classNames(
-                    styles.contentPadding,
-                    textarea ? undefined : styles.content,
-                    inProgress && styles.rowInProgress
-                )}
-            >
+            {/* {message.pluginExecutionInfos && message.pluginExecutionInfos.length > 0 && ( */}
+            {/*     <div className={styles.actions}> */}
+            {/*         <PluginExecutionInfos */}
+            {/*             pluginExecutionInfos={message.pluginExecutionInfos} */}
+            {/*             className={transcriptActionClassName} */}
+            {/*             devMode={pluginsDevMode} */}
+            {/*         /> */}
+            {/*     </div> */}
+            {/* )} */}
+            <div className={classNames(textarea ? undefined : styles.content, inProgress && styles.rowInProgress)}>
                 {message.displayText ? (
                     textarea ?? (
                         <CodeBlocks
@@ -168,6 +179,9 @@ export const TranscriptItem: React.FunctionComponent<
                     <BlinkingCursor />
                 ) : null}
             </div>
+            {message.buttons?.length && ChatButtonComponent && (
+                <div className={styles.actions}>{message.buttons.map(ChatButtonComponent)}</div>
+            )}
             {showFeedbackButtons &&
                 FeedbackButtonsContainer &&
                 feedbackButtonsOnSubmit &&
@@ -175,7 +189,7 @@ export const TranscriptItem: React.FunctionComponent<
                     <footer className={classNames(styles.footerContainer, transcriptItemParticipantClassName)}>
                         {/* display edit buttons on last user message, feedback buttons on last assistant message only */}
                         <FeedbackButtonsContainer
-                            className={styles.FeedbackEditButtonsContainer}
+                            className={styles.feedbackEditButtonsContainer}
                             feedbackButtonsOnSubmit={feedbackButtonsOnSubmit}
                         />
                     </footer>

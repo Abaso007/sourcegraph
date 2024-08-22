@@ -1,10 +1,11 @@
-import { FC } from 'react'
+import { useEffect, type FC } from 'react'
 
 import { Timestamp } from '@sourcegraph/branded/src/components/Timestamp'
 import { useQuery } from '@sourcegraph/http-client'
+import type { TelemetryV2Props } from '@sourcegraph/shared/src/telemetry'
 import { Alert, BarChart, Card, ErrorAlert, Link, LoadingSpinner, Text } from '@sourcegraph/wildcard'
 
-import {
+import type {
     GetInstanceOwnStatsResult,
     GetOwnSignalConfigurationsResult,
     OwnSignalConfig,
@@ -21,17 +22,24 @@ interface OwnCoverageDatum {
     tooltip: string
 }
 
-export const OwnAnalyticsPage: FC = () => {
+interface OwnAnalyticsPageProps extends TelemetryV2Props {}
+
+export const OwnAnalyticsPage: FC<OwnAnalyticsPageProps> = ({ telemetryRecorder }) => {
     const { data, loading, error } = useQuery<GetOwnSignalConfigurationsResult>(GET_OWN_JOB_CONFIGURATIONS, {})
     const enabled =
         data?.ownSignalConfigurations.some(
             (config: OwnSignalConfig) => config.name === 'analytics' && config.isEnabled
         ) || false
+
+    useEffect(() => {
+        telemetryRecorder.recordEvent('admin.analytics.own', 'view')
+    }, [telemetryRecorder])
+
     return (
         <>
             {loading && <LoadingSpinner />}
             {error && <ErrorAlert prefix="Error finding out if own analytics are enabled" error={error} />}
-            <AnalyticsPageTitle>Own</AnalyticsPageTitle>
+            <AnalyticsPageTitle>Code ownership</AnalyticsPageTitle>
             {enabled ? <OwnAnalyticsPanel /> : <OwnEnableAnalytics />}
         </>
     )
@@ -80,7 +88,7 @@ const OwnAnalyticsPanel: FC = () => {
     return (
         <>
             {loading && <LoadingSpinner />}
-            {error && <ErrorAlert prefix="Error getting own analytics" error={error} />}
+            {error && <ErrorAlert prefix="Error getting code ownership analytics" error={error} />}
             {!loading && !error && (
                 <>
                     {/* TODO(#52826): If only partial data is available - make that clear to the user. */}
@@ -122,7 +130,7 @@ const OwnAnalyticsPanel: FC = () => {
 
 const OwnEnableAnalytics: FC = () => (
     <Alert variant="info">
-        Analytics is not enabled, please <Link to="/site-admin/own-signal-page">enable Own analytics</Link> job first to
-        see Own stats.
+        Analytics is not enabled, please <Link to="/site-admin/own-signal-page">enable code ownership analytics</Link>{' '}
+        job first to see code ownership stats.
     </Alert>
 )

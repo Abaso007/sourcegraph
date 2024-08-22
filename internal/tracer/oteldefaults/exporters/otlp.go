@@ -9,17 +9,19 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	oteltracesdk "go.opentelemetry.io/otel/sdk/trace"
+	"google.golang.org/grpc"
 
+	"github.com/sourcegraph/sourcegraph/internal/grpc/internalerrs"
 	"github.com/sourcegraph/sourcegraph/internal/otlpenv"
 	"github.com/sourcegraph/sourcegraph/lib/errors"
 )
 
-// NewOTLPExporter exports spans to an OpenTelemetry collector via the OpenTelemetry
-// protocol (OTLP) based environment configuration.
+// NewOTLPTraceExporter exports trace spans to an OpenTelemetry collector via the
+// OpenTelemetry protocol (OTLP) based on environment configuration.
 //
 // By default, prefer to use internal/tracer.Init to set up a global OpenTelemetry
 // tracer and use that instead.
-func NewOTLPExporter(ctx context.Context, logger log.Logger) (oteltracesdk.SpanExporter, error) {
+func NewOTLPTraceExporter(ctx context.Context, logger log.Logger) (oteltracesdk.SpanExporter, error) {
 	endpoint := otlpenv.GetEndpoint()
 	if endpoint == "" {
 		// OTEL_EXPORTER_OTLP_ENDPOINT has been explicitly set to ""
@@ -39,8 +41,13 @@ func NewOTLPExporter(ctx context.Context, logger log.Logger) (oteltracesdk.SpanE
 	// Work with different protocols
 	switch protocol {
 	case otlpenv.ProtocolGRPC:
+		otlpLogger := logger.Scoped("otlp")
 		opts := []otlptracegrpc.Option{
 			otlptracegrpc.WithEndpoint(trimmedEndpoint),
+			otlptracegrpc.WithDialOption(
+				grpc.WithStreamInterceptor(internalerrs.LoggingStreamClientInterceptor(otlpLogger)),
+				grpc.WithUnaryInterceptor(internalerrs.LoggingUnaryClientInterceptor(otlpLogger)),
+			),
 		}
 		if insecure {
 			opts = append(opts, otlptracegrpc.WithInsecure())
@@ -55,6 +62,8 @@ func NewOTLPExporter(ctx context.Context, logger log.Logger) (oteltracesdk.SpanE
 			opts = append(opts, otlptracehttp.WithInsecure())
 		}
 		client = otlptracehttp.NewClient(opts...)
+	default:
+		return nil, errors.Newf("unexpected protocol %q", protocol)
 	}
 
 	// Initialize the exporter

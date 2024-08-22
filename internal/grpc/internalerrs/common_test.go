@@ -20,70 +20,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func TestCallBackClientStream(t *testing.T) {
-	t.Run("SendMsg calls postMessageSend with message and error", func(t *testing.T) {
-		sentinelMessage := struct{}{}
-		sentinelErr := errors.New("send error")
-
-		var called bool
-		stream := callBackClientStream{
-			ClientStream: &mockClientStream{
-				sendErr: sentinelErr,
-			},
-			postMessageSend: func(message any, err error) {
-				called = true
-
-				if diff := cmp.Diff(message, sentinelMessage); diff != "" {
-					t.Errorf("postMessageSend called with unexpected message (-want +got):\n%s", diff)
-				}
-				if !errors.Is(err, sentinelErr) {
-					t.Errorf("got %v, want %v", err, sentinelErr)
-				}
-			},
-		}
-
-		sendErr := stream.SendMsg(sentinelMessage)
-		if !called {
-			t.Error("postMessageSend not called")
-		}
-
-		if !errors.Is(sendErr, sentinelErr) {
-			t.Errorf("got %v, want %v", sendErr, sentinelErr)
-		}
-	})
-
-	t.Run("RecvMsg calls postMessageReceive with message and error", func(t *testing.T) {
-		sentinelMessage := struct{}{}
-		sentinelErr := errors.New("receive error")
-
-		var called bool
-		stream := callBackClientStream{
-			ClientStream: &mockClientStream{
-				recvErr: sentinelErr,
-			},
-			postMessageReceive: func(message any, err error) {
-				called = true
-
-				if diff := cmp.Diff(message, sentinelMessage); diff != "" {
-					t.Errorf("postMessageReceive called with unexpected message (-want +got):\n%s", diff)
-				}
-				if !errors.Is(err, sentinelErr) {
-					t.Errorf("got %v, want %v", err, sentinelErr)
-				}
-			},
-		}
-
-		receiveErr := stream.RecvMsg(sentinelMessage)
-		if !called {
-			t.Error("postMessageReceive not called")
-		}
-
-		if !errors.Is(receiveErr, sentinelErr) {
-			t.Errorf("got %v, want %v", receiveErr, sentinelErr)
-		}
-	})
-}
-
 func TestRequestSavingClientStream_InitialRequest(t *testing.T) {
 	// Setup: create a mock ClientStream that returns a sentinel error on SendMsg
 	sentinelErr := errors.New("send error")
@@ -330,53 +266,38 @@ func TestGRPCPrefixChecker(t *testing.T) {
 	}
 }
 
-func TestSplitMethodName(t *testing.T) {
-	testCases := []struct {
-		name string
-
-		fullMethod  string
-		wantService string
-		wantMethod  string
+func TestGRPCUnexpectedContentTypeChecker(t *testing.T) {
+	tests := []struct {
+		name   string
+		status *status.Status
+		want   bool
 	}{
 		{
-			name: "full method with service and method",
-
-			fullMethod:  "/package.service/method",
-			wantService: "package.service",
-			wantMethod:  "method",
+			name:   "gRPC error with OK status",
+			status: status.New(codes.OK, "transport: received unexpected content-type"),
+			want:   false,
 		},
 		{
-			name: "method without leading slash",
-
-			fullMethod:  "package.service/method",
-			wantService: "package.service",
-			wantMethod:  "method",
+			name:   "gRPC error without unexpected content-type message",
+			status: status.New(codes.Internal, "some random error"),
+			want:   false,
 		},
 		{
-			name: "service without method",
-
-			fullMethod:  "/package.service/",
-			wantService: "package.service",
-			wantMethod:  "",
+			name:   "gRPC error with unexpected content-type message",
+			status: status.Newf(codes.Internal, "transport: received unexpected content-type %q", "application/octet-stream"),
+			want:   true,
 		},
 		{
-			name: "empty input",
-
-			fullMethod:  "",
-			wantService: "unknown",
-			wantMethod:  "unknown",
+			name:   "gRPC error with unexpected content-type message as part of chain",
+			status: status.Newf(codes.Unknown, "transport: malformed grpc-status %q; transport: received unexpected content-type %q", "random-status", "application/octet-stream"),
+			want:   true,
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			service, method := splitMethodName(tc.fullMethod)
-			if diff := cmp.Diff(service, tc.wantService); diff != "" {
-				t.Errorf("splitMethodName(%q) service (-want +got):\n%s", tc.fullMethod, diff)
-			}
-
-			if diff := cmp.Diff(method, tc.wantMethod); diff != "" {
-				t.Errorf("splitMethodName(%q) method (-want +got):\n%s", tc.fullMethod, diff)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := gRPCUnexpectedContentTypeChecker(tt.status); got != tt.want {
+				t.Errorf("gRPCUnexpectedContentTypeChecker() = %v, want %v", got, tt.want)
 			}
 		})
 	}

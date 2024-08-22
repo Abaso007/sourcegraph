@@ -7,6 +7,10 @@ import (
 	"io"
 	"strings"
 
+	"github.com/dustin/go-humanize"
+
+	"github.com/sourcegraph/sourcegraph/internal/grpc/grpcutil"
+
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 
@@ -20,14 +24,14 @@ import (
 )
 
 var (
-	logScope       = "gRPC.internal.error.reporter"
-	logDescription = "logs gRPC errors that appear to come from the go-grpc implementation"
+	logScope = "gRPC.internal.error.reporter"
 
 	envLoggingEnabled        = env.MustGetBool("SRC_GRPC_INTERNAL_ERROR_LOGGING_ENABLED", true, "Enables logging of gRPC internal errors")
 	envLogStackTracesEnabled = env.MustGetBool("SRC_GRPC_INTERNAL_ERROR_LOGGING_LOG_STACK_TRACES", false, "Enables including stack traces in logs of gRPC internal errors")
 
-	envLogNonUTF8ProtobufMessages        = env.MustGetBool("SRC_GRPC_INTERNAL_ERROR_LOGGING_LOG_NON_UTF8_PROTOBUF_MESSAGES_ENABLED", false, "Enables logging of non-UTF-8 protobuf messages")
-	envLogNonUTF8ProtobufMessagesMaxSize = env.MustGetInt("SRC_GRPC_INTERNAL_ERROR_LOGGING_LOG_NON_UTF8_PROTOBUF_MESSAGES_MAX_SIZE_BYTES", 1024, "Maximum size of non-UTF-8 protobuf messages to log before truncation, in bytes. Negative values disable truncation.")
+	envLogMessagesEnabled                   = env.MustGetBool("SRC_GRPC_INTERNAL_ERROR_LOGGING_LOG_PROTOBUF_MESSAGES_ENABLED", false, "Enables inclusion of raw protobuf messages in the gRPC internal error logs")
+	envLogMessagesHandleMaxMessageSizeBytes = env.MustGetBytes("SRC_GRPC_INTERNAL_ERROR_LOGGING_LOG_PROTOBUF_MESSAGES_HANDLING_MAX_MESSAGE_SIZE_BYTES", "100MB", "Maximum size of protobuf messages that can be included in gRPC internal error logs. The purpose of this is to avoid excessive allocations. 0 bytes mean no limit.")
+	envLogMessagesMaxJSONSizeBytes          = env.MustGetBytes("SRC_GRPC_INTERNAL_ERROR_LOGGING_LOG_PROTOBUF_MESSAGES_JSON_TRUNCATION_SIZE_BYTES", "1KB", "Maximum size of the JSON representation of protobuf messages to log. JSON representations larger than this value will be truncated. 0 bytes disables truncation.")
 )
 
 // LoggingUnaryClientInterceptor returns a grpc.UnaryClientInterceptor that logs
@@ -40,13 +44,13 @@ func LoggingUnaryClientInterceptor(l log.Logger) grpc.UnaryClientInterceptor {
 		}
 	}
 
-	logger := l.Scoped(logScope, logDescription)
-	logger = logger.Scoped("unaryMethod", "errors that originated from a unary method")
+	logger := l.Scoped(logScope)
+	logger = logger.Scoped("unaryMethod")
 
 	return func(ctx context.Context, fullMethod string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 		err := invoker(ctx, fullMethod, req, reply, cc, opts...)
 		if err != nil {
-			serviceName, methodName := splitMethodName(fullMethod)
+			serviceName, methodName := grpcutil.SplitMethodName(fullMethod)
 
 			var initialRequest proto.Message
 			if m, ok := req.(proto.Message); ok {
@@ -70,11 +74,11 @@ func LoggingStreamClientInterceptor(l log.Logger) grpc.StreamClientInterceptor {
 		}
 	}
 
-	logger := l.Scoped(logScope, logDescription)
-	logger = logger.Scoped("streamingMethod", "errors that originated from a streaming method")
+	logger := l.Scoped(logScope)
+	logger = logger.Scoped("streamingMethod")
 
 	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, fullMethod string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
-		serviceName, methodName := splitMethodName(fullMethod)
+		serviceName, methodName := grpcutil.SplitMethodName(fullMethod)
 
 		stream, err := streamer(ctx, desc, cc, fullMethod, opts...)
 		if err != nil {
@@ -82,7 +86,7 @@ func LoggingStreamClientInterceptor(l log.Logger) grpc.StreamClientInterceptor {
 			// until after the stream is created.
 			//
 			// This is fine since the error is already available, and the non-utf8 string check is robust against nil messages.
-			logger := logger.Scoped("postInit", "errors that occurred after stream initialization, but before the first message was sent")
+			logger := logger.Scoped("postInit")
 			doLog(logger, serviceName, methodName, nil, nil, err)
 			return nil, err
 		}
@@ -102,13 +106,13 @@ func LoggingUnaryServerInterceptor(l log.Logger) grpc.UnaryServerInterceptor {
 		}
 	}
 
-	logger := l.Scoped(logScope, logDescription)
-	logger = logger.Scoped("unaryMethod", "errors that originated from a unary method")
+	logger := l.Scoped(logScope)
+	logger = logger.Scoped("unaryMethod")
 
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
 		response, err := handler(ctx, req)
 		if err != nil {
-			serviceName, methodName := splitMethodName(info.FullMethod)
+			serviceName, methodName := grpcutil.SplitMethodName(info.FullMethod)
 
 			var initialRequest proto.Message
 			if m, ok := req.(proto.Message); ok {
@@ -132,11 +136,11 @@ func LoggingStreamServerInterceptor(l log.Logger) grpc.StreamServerInterceptor {
 		}
 	}
 
-	logger := l.Scoped(logScope, logDescription)
-	logger = logger.Scoped("streamingMethod", "errors that originated from a streaming method")
+	logger := l.Scoped(logScope)
+	logger = logger.Scoped("streamingMethod")
 
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		serviceName, methodName := splitMethodName(info.FullMethod)
+		serviceName, methodName := grpcutil.SplitMethodName(info.FullMethod)
 
 		stream := newLoggingServerStream(ss, logger, serviceName, methodName)
 		return handler(srv, stream)
@@ -144,8 +148,8 @@ func LoggingStreamServerInterceptor(l log.Logger) grpc.StreamServerInterceptor {
 }
 
 func newLoggingServerStream(s grpc.ServerStream, logger log.Logger, serviceName, methodName string) grpc.ServerStream {
-	sendLogger := logger.Scoped("postMessageSend", "errors that occurred after sending a message")
-	receiveLogger := logger.Scoped("postMessageReceive", "errors that occurred after receiving a message")
+	sendLogger := logger.Scoped("postMessageSend")
+	receiveLogger := logger.Scoped("postMessageReceive")
 
 	requestSaver := requestSavingServerStream{ServerStream: s}
 
@@ -167,26 +171,25 @@ func newLoggingServerStream(s grpc.ServerStream, logger log.Logger, serviceName,
 }
 
 func newLoggingClientStream(s grpc.ClientStream, logger log.Logger, serviceName, methodName string) grpc.ClientStream {
-	sendLogger := logger.Scoped("postMessageSend", "errors that occurred after sending a message")
-	receiveLogger := logger.Scoped("postMessageReceive", "errors that occurred after receiving a message")
+	sendLogger := logger.Scoped("postMessageSend")
+	receiveLogger := logger.Scoped("postMessageReceive")
 
 	requestSaver := requestSavingClientStream{ClientStream: s}
 
-	return &callBackClientStream{
-		ClientStream: &requestSaver,
-
-		postMessageSend: func(m any, err error) {
-			if err != nil {
-				doLog(sendLogger, serviceName, methodName, requestSaver.InitialRequest(), m, err)
-			}
-		},
-
-		postMessageReceive: func(m any, err error) {
-			if err != nil && err != io.EOF { // EOF is expected at the end of a stream, so no need to log an error
-				doLog(receiveLogger, serviceName, methodName, requestSaver.InitialRequest(), m, err)
-			}
-		},
+	postMessageSend := func(m any, err error) {
+		if err != nil {
+			doLog(sendLogger, serviceName, methodName, requestSaver.InitialRequest(), m, err)
+		}
 	}
+
+	postMessageReceive := func(m any, err error) {
+		if err != nil && err != io.EOF { // EOF is expected at the end of a stream, so no need to log an error
+			doLog(receiveLogger, serviceName, methodName, requestSaver.InitialRequest(), m, err)
+		}
+	}
+
+	return grpcutil.NewCallBackClientStream(&requestSaver, postMessageSend, postMessageReceive)
+
 }
 
 func doLog(logger log.Logger, serviceName, methodName string, initialRequest *proto.Message, payload any, err error) {
@@ -215,80 +218,70 @@ func doLog(logger log.Logger, serviceName, methodName string, initialRequest *pr
 		allFields = append(allFields, log.String("errWithStack", fmt.Sprintf("%+v", err)))
 	}
 
+	// Log the initial request message
+	if envLogMessagesEnabled {
+		fs := messageJSONFields(initialRequest, "initialRequestJSON", envLogMessagesHandleMaxMessageSizeBytes, envLogMessagesMaxJSONSizeBytes)
+		allFields = append(allFields, fs...)
+	}
+
 	if isNonUTF8StringError(s) {
 		m, ok := payload.(proto.Message)
 		if ok {
-			allFields = append(
-				allFields,
-				additionalNonUTF8StringDebugFields(initialRequest, m, envLogNonUTF8ProtobufMessages, envLogNonUTF8ProtobufMessagesMaxSize)...,
-			)
+			allFields = append(allFields, nonUTF8StringLogFields(m)...)
+
+			if envLogMessagesEnabled { // Log the latest message as well for non-utf8 errors
+				fs := messageJSONFields(&m, "messageJSON", envLogMessagesHandleMaxMessageSizeBytes, envLogMessagesMaxJSONSizeBytes)
+				allFields = append(allFields, fs...)
+			}
 		}
 	}
 
 	logger.Error(s.Message(), allFields...)
 }
 
-// additionalNonUTF8StringDebugFields returns additional log fields that should be included when logging a non-UTF8 string error.
+// messageJSONFields converts a protobuf message to a JSON string and returns it as a log field using the provided "key".
+// The resulting JSON string is truncated to maxJSONSizeBytes.
 //
-// By default, this includes the names of all fields that contain non-UTF8 strings.
-// If shouldLogMessageJSON is true, then the JSON representations for the initial request message and latest message are also included.
-// The maxMessageSizeLogBytes parameter controls the maximum size of the messages that will be logged, after which they will be truncated. Negative values disable truncation.
-func additionalNonUTF8StringDebugFields(firstMessage *proto.Message, latestMessage proto.Message, shouldLogMessageJSON bool, maxMessageLogSizeBytes int) []log.Field {
-	var allFields []log.Field
-
-	// Add the names of all protobuf fields that contain non-UTF-8 strings to the log.
-
-	badFields, err := findNonUTF8StringFields(latestMessage)
-	if err != nil {
-		allFields = append(allFields, log.Error(errors.Wrapf(err, "failed to find non-UTF8 string fields in protobuf message")))
-		return allFields
+// If the size of the original protobuf message exceeds maxMessageSizeBytes or any serialization errors are encountered, log fields
+// describing the error are returned instead.
+func messageJSONFields(m *proto.Message, key string, maxMessageSizeBytes, maxJSONSizeBytes uint64) []log.Field {
+	if m == nil || *m == nil {
+		return nil
 	}
 
-	allFields = append(allFields, log.Strings("nonUTF8StringFields", badFields))
+	if maxMessageSizeBytes > 0 {
+		size := uint64(proto.Size(*m))
+		if size > maxMessageSizeBytes {
+			err := errors.Newf(
+				"failed to marshal protobuf message (key: %q) to string: message too large (size %q, limit %q)",
+				key,
+				humanize.Bytes(size), humanize.Bytes(maxMessageSizeBytes),
+			)
 
-	// Add the JSON representation of the message to the log.
-
-	if !shouldLogMessageJSON {
-		return allFields
+			return []log.Field{log.Error(err)}
+		}
 	}
 
 	// Note: we can't use the protojson library here since it doesn't support messages with non-UTF8 strings.
-	jsonBytes, err := json.Marshal(latestMessage)
+	bs, err := json.Marshal(*m)
 	if err != nil {
-		allFields = append(allFields, log.Error(errors.Wrapf(err, "failed to marshal latest protobuf message to bytes")))
-		return allFields
+		err := errors.Wrapf(err, "failed to marshal protobuf message (key: %q) to string", key)
+		return []log.Field{log.Error(err)}
 	}
 
-	s := truncate(string(jsonBytes), maxMessageLogSizeBytes)
-	allFields = append(allFields, log.String("messageJSON", s))
-
-	// Log the JSON representation of the initial request message, if available for debugging purposes.
-
-	if firstMessage == nil {
-		return allFields
-	}
-
-	jsonBytes, err = json.Marshal(*firstMessage)
-	if err != nil {
-		allFields = append(allFields, log.Error(errors.Wrapf(err, "failed to marshal initial request protobuf message to bytes")))
-		return allFields
-	}
-
-	s = truncate(string(jsonBytes), maxMessageLogSizeBytes)
-	allFields = append(allFields, log.String("initialRequestJSON", s))
-
-	return allFields
+	s := truncate(string(bs), maxJSONSizeBytes)
+	return []log.Field{log.String(key, s)}
 }
 
 // truncate shortens the string be to at most maxBytes bytes, appending a message indicating that the string was truncated if necessary.
 //
-// If maxBytes is negative, then the string is not truncated.
-func truncate(s string, maxBytes int) string {
-	if maxBytes < 0 {
+// If maxBytes is 0, then the string is not truncated.
+func truncate(s string, maxBytes uint64) string {
+	if maxBytes <= 0 {
 		return s
 	}
 
-	bytesToTruncate := len(s) - maxBytes
+	bytesToTruncate := len(s) - int(maxBytes)
 	if bytesToTruncate > 0 {
 		s = s[:maxBytes]
 		s = fmt.Sprintf("%s...(truncated %d bytes)", s, bytesToTruncate)
@@ -303,4 +296,16 @@ func isNonUTF8StringError(s *status.Status) bool {
 	}
 
 	return strings.Contains(s.Message(), "string field contains invalid UTF-8")
+}
+
+// nonUTF8StringLogFields checks a protobuf message for fields that contain non-utf8 strings, and returns them as log fields.
+func nonUTF8StringLogFields(m proto.Message) []log.Field {
+	fs, err := findNonUTF8StringFields(m)
+	if err != nil {
+		err := errors.Wrapf(err, "failed to find non-UTF8 string fields in protobuf message")
+		return []log.Field{log.Error(err)}
+
+	}
+
+	return []log.Field{log.Strings("nonUTF8StringFields", fs)}
 }

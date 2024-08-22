@@ -1,6 +1,7 @@
 package graphqlbackend
 
 import (
+	"context"
 	"strconv"
 	"sync/atomic"
 
@@ -22,9 +23,12 @@ import (
 const costEstimateVersion = 2
 
 type QueryCost struct {
-	FieldCount int
-	MaxDepth   int
-	Version    int
+	FieldCount                 int
+	MaxDepth                   int
+	HighestDuplicateFieldCount int
+	UniqueFieldCount           int
+	AliasCount                 int
+	Version                    int
 }
 
 // EstimateQueryCost estimates the cost of the query before it is actually
@@ -76,7 +80,7 @@ func EstimateQueryCost(query string, variables map[string]any) (totalCost *Query
 
 	// Calculate fragment costs first as we'll need them for the overall operation
 	// cost.
-	fragmentCosts := make(map[string]int)
+	fragmentCosts := make(map[string]QueryCost)
 	// Fragments can reference other fragments so we need their dependencies.
 	fragmentDeps := make(map[string]map[string]struct{})
 
@@ -111,7 +115,7 @@ func EstimateQueryCost(query string, variables map[string]any) (totalCost *Query
 			if err != nil {
 				return nil, errors.Wrap(err, "calculating fragment cost")
 			}
-			fragmentCosts[frag.Name.Value] = cost.FieldCount
+			fragmentCosts[frag.Name.Value] = *cost
 			fragSeen[frag.Name.Value] = struct{}{}
 		}
 		if len(fragSeen) == len(fragments) {
@@ -125,6 +129,12 @@ func EstimateQueryCost(query string, variables map[string]any) (totalCost *Query
 			return nil, errors.Wrap(err, "calculating operation cost")
 		}
 		totalCost.FieldCount += cost.FieldCount
+		totalCost.AliasCount += cost.AliasCount
+
+		if cost.HighestDuplicateFieldCount > totalCost.HighestDuplicateFieldCount {
+			totalCost.HighestDuplicateFieldCount = cost.HighestDuplicateFieldCount
+		}
+		totalCost.UniqueFieldCount += cost.UniqueFieldCount
 		if totalCost.MaxDepth < cost.MaxDepth {
 			totalCost.MaxDepth = cost.MaxDepth
 		}
@@ -140,14 +150,14 @@ func EstimateQueryCost(query string, variables map[string]any) (totalCost *Query
 	return totalCost, nil
 }
 
-func calcNodeCost(def ast.Node, fragmentCosts map[string]int, variables map[string]any) (*QueryCost, error) {
+func calcNodeCost(def ast.Node, fragmentCosts map[string]QueryCost, variables map[string]any) (*QueryCost, error) {
 	// NOTE: When we encounter errors in our visit funcs we return
 	// visitor.ActionBreak to stop walking the tree and set the top level err
 	// variable so that it is returned
 	var visitErr error
 
 	if fragmentCosts == nil {
-		fragmentCosts = make(map[string]int)
+		fragmentCosts = make(map[string]QueryCost)
 	}
 	inlineFragmentDepth := 0
 	var inlineFragments []string
@@ -157,7 +167,10 @@ func calcNodeCost(def ast.Node, fragmentCosts map[string]int, variables map[stri
 	limitStack := make([]int, 0)
 	currentLimit := 1
 
+	aliasCount := 0
 	fieldCount := 0
+	duplicateFieldCount := 0
+	uniqueFieldCount := 0
 	depth := 0
 	maxDepth := 0
 	multiplier := 1
@@ -180,6 +193,9 @@ func calcNodeCost(def ast.Node, fragmentCosts map[string]int, variables map[stri
 	nonNullVariables := make(map[string]any)
 	defaultValues := make(map[string]any)
 
+	countNodes := make(map[string]int)
+	uniqueFields := make(map[string]struct{})
+
 	v := &visitor.VisitorOptions{
 		Enter: func(p visitor.VisitFuncParams) (string, any) {
 			switch node := p.Node.(type) {
@@ -190,6 +206,15 @@ func calcNodeCost(def ast.Node, fragmentCosts map[string]int, variables map[stri
 				}
 				pushLimit()
 			case *ast.Field:
+				if node.Alias != nil {
+					aliasCount++
+				}
+
+				if _, f := uniqueFields[node.Name.Value]; !f {
+					uniqueFields[node.Name.Value] = struct{}{}
+				}
+				countNodes[node.Name.Value]++
+
 				switch node.Name.Value {
 				// Values that won't appear in the result
 				case "nodes", "__typename":
@@ -264,7 +289,13 @@ func calcNodeCost(def ast.Node, fragmentCosts map[string]int, variables map[stri
 					visitErr = errors.Errorf("unknown fragment %q", node.Name.Value)
 					return visitor.ActionBreak, nil
 				}
-				fieldCount += fragmentCost * multiplier
+				fieldCount += fragmentCost.FieldCount * multiplier
+				aliasCount += fragmentCost.AliasCount
+				uniqueFieldCount += fragmentCost.UniqueFieldCount
+
+				if fragmentCost.HighestDuplicateFieldCount > duplicateFieldCount {
+					duplicateFieldCount = fragmentCost.HighestDuplicateFieldCount
+				}
 			case *ast.InlineFragment:
 				inlineFragmentDepth++
 				// We calculate inline fragment costs and store them
@@ -274,7 +305,8 @@ func calcNodeCost(def ast.Node, fragmentCosts map[string]int, variables map[stri
 					visitErr = errors.Wrap(err, "calculating inline fragment cost")
 					return visitor.ActionBreak, nil
 				}
-				fragmentCosts[node.TypeCondition.Name.Value] = fragCost.FieldCount * multiplier
+				fragCost.FieldCount = fragCost.FieldCount * multiplier
+				fragmentCosts[node.TypeCondition.Name.Value] = *fragCost
 				inlineFragments = append(inlineFragments, node.TypeCondition.Name.Value)
 			}
 			return visitor.ActionNoChange, nil
@@ -297,14 +329,27 @@ func calcNodeCost(def ast.Node, fragmentCosts map[string]int, variables map[stri
 	var maxInlineFragmentCost int
 	for _, v := range inlineFragments {
 		fragCost := fragmentCosts[v]
-		if fragCost > maxInlineFragmentCost {
-			maxInlineFragmentCost = fragCost
+		if fragCost.FieldCount > maxInlineFragmentCost {
+			maxInlineFragmentCost = fragCost.FieldCount
 		}
 	}
 
+	for _, f := range countNodes {
+		if f > 1 && f > duplicateFieldCount {
+			duplicateFieldCount = f
+		}
+	}
+
+	if len(uniqueFields) > uniqueFieldCount {
+		uniqueFieldCount = len(uniqueFields)
+	}
+
 	return &QueryCost{
-		FieldCount: fieldCount + maxInlineFragmentCost,
-		MaxDepth:   maxDepth,
+		FieldCount:                 fieldCount + maxInlineFragmentCost,
+		MaxDepth:                   maxDepth,
+		AliasCount:                 aliasCount,
+		HighestDuplicateFieldCount: duplicateFieldCount,
+		UniqueFieldCount:           uniqueFieldCount,
 	}, visitErr
 }
 
@@ -369,14 +414,14 @@ type LimiterArgs struct {
 }
 
 type Limiter interface {
-	RateLimit(key string, quantity int, args LimiterArgs) (bool, throttled.RateLimitResult, error)
+	RateLimit(ctx context.Context, key string, quantity int, args LimiterArgs) (bool, throttled.RateLimitResult, error)
 }
 
 type LimitWatcher interface {
 	Get() (Limiter, bool)
 }
 
-func NewBasicLimitWatcher(logger log.Logger, store throttled.GCRAStore) *BasicLimitWatcher {
+func NewBasicLimitWatcher(logger log.Logger, store throttled.GCRAStoreCtx) *BasicLimitWatcher {
 	basic := &BasicLimitWatcher{
 		store: store,
 	}
@@ -392,7 +437,7 @@ func NewBasicLimitWatcher(logger log.Logger, store throttled.GCRAStore) *BasicLi
 }
 
 type BasicLimitWatcher struct {
-	store throttled.GCRAStore
+	store throttled.GCRAStoreCtx
 	rl    atomic.Value // *RateLimiter
 }
 
@@ -403,7 +448,7 @@ func (bl *BasicLimitWatcher) updateFromConfig(logger log.Logger, limit int) {
 		return
 	}
 	maxBurstPercentage := 0.2
-	l, err := throttled.NewGCRARateLimiter(
+	l, err := throttled.NewGCRARateLimiterCtx(
 		bl.store,
 		throttled.RateQuota{
 			MaxRate:  throttled.PerHour(limit),
@@ -428,46 +473,15 @@ func (bl *BasicLimitWatcher) Get() (Limiter, bool) {
 }
 
 type BasicLimiter struct {
-	*throttled.GCRARateLimiter
+	*throttled.GCRARateLimiterCtx
 	enabled bool
 }
 
 // RateLimit limits unauthenticated requests to the GraphQL API with an equal
 // quantity of 1.
-func (bl *BasicLimiter) RateLimit(_ string, _ int, args LimiterArgs) (bool, throttled.RateLimitResult, error) {
-	if args.Anonymous && args.RequestName == "unknown" && args.RequestSource == trace.SourceOther && bl.GCRARateLimiter != nil {
-		return bl.GCRARateLimiter.RateLimit("basic", 1)
+func (bl *BasicLimiter) RateLimit(ctx context.Context, _ string, _ int, args LimiterArgs) (bool, throttled.RateLimitResult, error) {
+	if args.Anonymous && args.RequestName == "unknown" && args.RequestSource == trace.SourceOther && bl.GCRARateLimiterCtx != nil {
+		return bl.GCRARateLimiterCtx.RateLimitCtx(ctx, "basic", 1)
 	}
 	return false, throttled.RateLimitResult{}, nil
-}
-
-type RateLimiter struct {
-	enabled     bool
-	ipLimiter   *throttled.GCRARateLimiter
-	userLimiter *throttled.GCRARateLimiter
-	overrides   map[string]limiter
-}
-
-func (rl *RateLimiter) RateLimit(uid string, cost int, args LimiterArgs) (bool, throttled.RateLimitResult, error) {
-	if r, ok := rl.overrides[uid]; ok {
-		return r.RateLimit(uid, cost)
-	}
-	if args.IsIP {
-		return rl.ipLimiter.RateLimit(uid, cost)
-	}
-	return rl.userLimiter.RateLimit(uid, cost)
-}
-
-type limiter interface {
-	RateLimit(string, int) (bool, throttled.RateLimitResult, error)
-}
-
-// fixedLimiter is a rate limiter that always returns the same result
-type fixedLimiter struct {
-	limited bool
-	result  throttled.RateLimitResult
-}
-
-func (f *fixedLimiter) RateLimit(string, int) (bool, throttled.RateLimitResult, error) {
-	return f.limited, f.result, nil
 }

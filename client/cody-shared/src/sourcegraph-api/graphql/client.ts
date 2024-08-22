@@ -1,27 +1,33 @@
 import fetch from 'isomorphic-fetch'
 
-import { buildGraphQLUrl } from '@sourcegraph/http-client'
-
-import { ConfigurationWithAccessToken } from '../../configuration'
+import type { ConfigurationWithAccessToken } from '../../configuration'
 import { isError } from '../../utils'
+import { DOTCOM_URL, isDotCom } from '../environments'
 
 import {
+    CURRENT_SITE_CODY_LLM_CONFIGURATION,
+    CURRENT_SITE_CODY_LLM_PROVIDER,
+    CURRENT_SITE_GRAPHQL_FIELDS_QUERY,
+    CURRENT_SITE_HAS_CODY_ENABLED_QUERY,
+    CURRENT_SITE_IDENTIFICATION,
+    CURRENT_SITE_VERSION_QUERY,
+    CURRENT_USER_ID_AND_VERIFIED_EMAIL_QUERY,
     CURRENT_USER_ID_QUERY,
+    EVALUATE_FEATURE_FLAG_QUERY,
+    GET_CODY_CONTEXT_QUERY,
+    GET_FEATURE_FLAGS_QUERY,
     IS_CONTEXT_REQUIRED_QUERY,
+    LEGACY_SEARCH_EMBEDDINGS_QUERY,
+    LOG_EVENT_MUTATION,
+    LOG_EVENT_MUTATION_DEPRECATED,
+    REPOSITORY_EMBEDDING_EXISTS_QUERY,
     REPOSITORY_ID_QUERY,
     REPOSITORY_IDS_QUERY,
     REPOSITORY_NAMES_QUERY,
     SEARCH_ATTRIBUTION_QUERY,
     SEARCH_EMBEDDINGS_QUERY,
-    LEGACY_SEARCH_EMBEDDINGS_QUERY,
-    LOG_EVENT_MUTATION,
-    REPOSITORY_EMBEDDING_EXISTS_QUERY,
-    CURRENT_USER_ID_AND_VERIFIED_EMAIL_QUERY,
-    CURRENT_SITE_VERSION_QUERY,
-    CURRENT_SITE_HAS_CODY_ENABLED_QUERY,
-    CURRENT_SITE_GRAPHQL_FIELDS_QUERY,
-    GET_CODY_CONTEXT_QUERY,
 } from './queries'
+import { buildGraphQLUrl } from './url'
 
 interface APIResponse<T> {
     data?: T
@@ -30,6 +36,10 @@ interface APIResponse<T> {
 
 interface SiteVersionResponse {
     site: { productVersion: string } | null
+}
+
+interface SiteIdentificationResponse {
+    site: { siteID: string; productSubscription: { license: { hashedKey: string } } } | null
 }
 
 interface SiteGraphqlFieldsResponse {
@@ -46,6 +56,14 @@ interface CurrentUserIdResponse {
 
 interface CurrentUserIdHasVerifiedEmailResponse {
     currentUser: { id: string; hasVerifiedEmail: boolean } | null
+}
+
+interface CodyLLMSiteConfigurationResponse {
+    site: { codyLLMConfiguration: Omit<CodyLLMSiteConfiguration, 'provider'> | null } | null
+}
+
+interface CodyLLMSiteConfigurationProviderResponse {
+    site: { codyLLMConfiguration: Pick<CodyLLMSiteConfiguration, 'provider'> | null } | null
 }
 
 interface RepositoryIdResponse {
@@ -124,8 +142,33 @@ export interface SearchAttributionResults {
     nodes: { repositoryName: string }[]
 }
 
+export interface CodyLLMSiteConfiguration {
+    chatModel?: string
+    chatModelMaxTokens?: number
+    fastChatModel?: string
+    fastChatModelMaxTokens?: number
+    completionModel?: string
+    completionModelMaxTokens?: number
+    provider?: string
+    smartContextWindow?: boolean
+    disableClientConfigAPI?: boolean
+}
+
 interface IsContextRequiredForChatQueryResponse {
     isContextRequiredForChatQuery: boolean
+}
+
+interface EvaluatedFeatureFlag {
+    name: string
+    value: boolean
+}
+
+interface EvaluatedFeatureFlagsResponse {
+    evaluatedFeatureFlags: EvaluatedFeatureFlag[]
+}
+
+interface EvaluateFeatureFlagResponse {
+    evaluateFeatureFlag: boolean
 }
 
 function extractDataOrError<T, R>(response: APIResponse<T> | Error, extract: (data: T) => R): R | Error {
@@ -141,30 +184,72 @@ function extractDataOrError<T, R>(response: APIResponse<T> | Error, extract: (da
     return extract(response.data)
 }
 
+export interface event {
+    event: string
+    userCookieID: string
+    url: string
+    source: string
+    argument?: string | {}
+    publicArgument?: string | {}
+    client: string
+    connectedSiteID?: string
+    hashedLicenseKey?: string
+}
+
+type GraphQLAPIClientConfig = Pick<ConfigurationWithAccessToken, 'serverEndpoint' | 'accessToken' | 'customHeaders'> &
+    Pick<Partial<ConfigurationWithAccessToken>, 'telemetryLevel'>
+
+export let customUserAgent: string | undefined
+
+export function addCustomUserAgent(headers: Headers): void {
+    if (customUserAgent) {
+        headers.set('User-Agent', customUserAgent)
+    }
+}
+
+export function setUserAgent(newUseragent: string): void {
+    customUserAgent = newUseragent
+}
+
 export class SourcegraphGraphQLAPIClient {
-    private dotcomUrl = 'https://sourcegraph.com'
+    private dotcomUrl = DOTCOM_URL
 
-    constructor(
-        private config: Pick<ConfigurationWithAccessToken, 'serverEndpoint' | 'accessToken' | 'customHeaders'>
-    ) {}
+    constructor(private config: GraphQLAPIClientConfig) {}
 
-    public onConfigurationChange(
-        newConfig: Pick<ConfigurationWithAccessToken, 'serverEndpoint' | 'accessToken' | 'customHeaders'>
-    ): void {
+    public onConfigurationChange(newConfig: GraphQLAPIClientConfig): void {
         this.config = newConfig
     }
 
     public isDotCom(): boolean {
-        return new URL(this.config.serverEndpoint).origin === new URL(this.dotcomUrl).origin
+        return isDotCom(this.config.serverEndpoint)
     }
 
     public async getSiteVersion(): Promise<string | Error> {
         return this.fetchSourcegraphAPI<APIResponse<SiteVersionResponse>>(CURRENT_SITE_VERSION_QUERY, {}).then(
             response =>
-                extractDataOrError(response, data =>
-                    // Example values: "5.1.0" or "222587_2023-05-30_5.0-39cbcf1a50f0" for insider builds
-                    data.site?.productVersion ? data.site?.productVersion : new Error('site version not found')
+                extractDataOrError(
+                    response,
+                    data =>
+                        // Example values: "5.1.0" or "222587_2023-05-30_5.0-39cbcf1a50f0" for insider builds
+                        data.site?.productVersion ?? new Error('site version not found')
                 )
+        )
+    }
+
+    public async getSiteIdentification(): Promise<{ siteid: string; hashedLicenseKey: string } | Error> {
+        const response = await this.fetchSourcegraphAPI<APIResponse<SiteIdentificationResponse>>(
+            CURRENT_SITE_IDENTIFICATION,
+            {}
+        )
+        return extractDataOrError(response, data =>
+            data.site?.siteID
+                ? data.site?.productSubscription?.license?.hashedKey
+                    ? {
+                          siteid: data.site?.siteID,
+                          hashedLicenseKey: data.site?.productSubscription?.license?.hashedKey,
+                      }
+                    : new Error('site hashed license key not found')
+                : new Error('site ID not found')
         )
     }
 
@@ -201,6 +286,31 @@ export class SourcegraphGraphQLAPIClient {
                 data.currentUser ? { ...data.currentUser } : new Error('current user not found with verified email')
             )
         )
+    }
+
+    public async getCodyLLMConfiguration(): Promise<undefined | CodyLLMSiteConfiguration | Error> {
+        // fetch Cody LLM provider separately for backward compatability
+        const [configResponse, providerResponse] = await Promise.all([
+            this.fetchSourcegraphAPI<APIResponse<CodyLLMSiteConfigurationResponse>>(
+                CURRENT_SITE_CODY_LLM_CONFIGURATION
+            ),
+            this.fetchSourcegraphAPI<APIResponse<CodyLLMSiteConfigurationProviderResponse>>(
+                CURRENT_SITE_CODY_LLM_PROVIDER
+            ),
+        ])
+
+        const config = extractDataOrError(configResponse, data => data.site?.codyLLMConfiguration || undefined)
+        if (!config || isError(config)) {
+            return config
+        }
+
+        let provider: string | undefined
+        const llmProvider = extractDataOrError(providerResponse, data => data.site?.codyLLMConfiguration?.provider)
+        if (llmProvider && !isError(llmProvider)) {
+            provider = llmProvider
+        }
+
+        return { ...config, provider }
     }
 
     public async getRepoIds(names: string[]): Promise<{ id: string; name: string }[] | Error> {
@@ -243,7 +353,6 @@ export class SourcegraphGraphQLAPIClient {
 
     /**
      * Checks if Cody is enabled on the current Sourcegraph instance.
-     *
      * @returns
      * enabled: Whether Cody is enabled.
      * version: The Sourcegraph version.
@@ -280,42 +389,62 @@ export class SourcegraphGraphQLAPIClient {
         return { enabled: insiderBuild || betaVersion, version: siteVersion }
     }
 
-    public async logEvent(event: {
-        event: string
-        userCookieID: string
-        url: string
-        source: string
-        argument?: string | {}
-        publicArgument?: string | {}
-    }): Promise<void | Error> {
+    public async logEvent(event: event): Promise<LogEventResponse | Error> {
         if (process.env.CODY_TESTING === 'true') {
-            console.log(`not logging ${event.event} in test mode`)
-            return
+            return this.sendEventLogRequestToTestingAPI(event)
         }
-        try {
-            if (this.config.serverEndpoint === this.dotcomUrl) {
-                await this.fetchSourcegraphAPI<APIResponse<LogEventResponse>>(LOG_EVENT_MUTATION, event).then(
-                    response => {
-                        extractDataOrError(response, data => {})
-                    }
-                )
-            } else {
-                await Promise.all([
-                    this.fetchSourcegraphAPI<APIResponse<LogEventResponse>>(LOG_EVENT_MUTATION, event).then(
-                        response => {
-                            extractDataOrError(response, data => {})
-                        }
-                    ),
-                    this.fetchSourcegraphDotcomAPI<APIResponse<LogEventResponse>>(LOG_EVENT_MUTATION, event).then(
-                        response => {
-                            extractDataOrError(response, data => {})
-                        }
-                    ),
-                ])
-            }
-        } catch (error) {
-            return error
+        if (this.config?.telemetryLevel === 'off') {
+            return {}
         }
+        if (this.isDotCom()) {
+            return this.sendEventLogRequestToAPI(event)
+        }
+        const responses = await Promise.all([
+            this.sendEventLogRequestToAPI(event),
+            this.sendEventLogRequestToDotComAPI(event),
+        ])
+        if (isError(responses[0]) && isError(responses[1])) {
+            return new Error('Errors logging events: ' + responses[0].toString() + ', ' + responses[1].toString())
+        }
+        if (isError(responses[0])) {
+            return responses[0]
+        }
+        if (isError(responses[1])) {
+            return responses[1]
+        }
+        return {}
+    }
+
+    private async sendEventLogRequestToDotComAPI(event: event): Promise<LogEventResponse | Error> {
+        const response = await this.fetchSourcegraphDotcomAPI<APIResponse<LogEventResponse>>(LOG_EVENT_MUTATION, event)
+        return extractDataOrError(response, data => data)
+    }
+
+    private async sendEventLogRequestToAPI(event: event): Promise<LogEventResponse | Error> {
+        const initialResponse = await this.fetchSourcegraphAPI<APIResponse<LogEventResponse>>(LOG_EVENT_MUTATION, event)
+        const initialDataOrError = extractDataOrError(initialResponse, data => data)
+
+        if (isError(initialDataOrError)) {
+            const secondResponse = await this.fetchSourcegraphAPI<APIResponse<LogEventResponse>>(
+                LOG_EVENT_MUTATION_DEPRECATED,
+                event
+            )
+            return extractDataOrError(secondResponse, data => data)
+        }
+
+        return initialDataOrError
+    }
+
+    private async sendEventLogRequestToTestingAPI(event: event): Promise<LogEventResponse | Error> {
+        const initialResponse = await this.fetchSourcegraphTestingAPI<APIResponse<LogEventResponse>>(event)
+        const initialDataOrError = extractDataOrError(initialResponse, data => data)
+
+        if (isError(initialDataOrError)) {
+            const secondResponse = await this.fetchSourcegraphTestingAPI<APIResponse<LogEventResponse>>(event)
+            return extractDataOrError(secondResponse, data => data)
+        }
+
+        return initialDataOrError
     }
 
     public async getCodyContext(
@@ -373,12 +502,31 @@ export class SourcegraphGraphQLAPIClient {
         }).then(response => extractDataOrError(response, data => data.isContextRequiredForChatQuery))
     }
 
-    private fetchSourcegraphAPI<T>(query: string, variables: Record<string, any>): Promise<T | Error> {
+    public async getEvaluatedFeatureFlags(): Promise<Record<string, boolean> | Error> {
+        return this.fetchSourcegraphAPI<APIResponse<EvaluatedFeatureFlagsResponse>>(GET_FEATURE_FLAGS_QUERY, {}).then(
+            response =>
+                extractDataOrError(response, data =>
+                    data.evaluatedFeatureFlags.reduce((acc, { name, value }) => {
+                        acc[name] = value
+                        return acc
+                    }, {} as Record<string, boolean>)
+                )
+        )
+    }
+
+    public async evaluateFeatureFlag(flagName: string): Promise<boolean | null | Error> {
+        return this.fetchSourcegraphAPI<APIResponse<EvaluateFeatureFlagResponse>>(EVALUATE_FEATURE_FLAG_QUERY, {
+            flagName,
+        }).then(response => extractDataOrError(response, data => data.evaluateFeatureFlag))
+    }
+
+    private fetchSourcegraphAPI<T>(query: string, variables: Record<string, any> = {}): Promise<T | Error> {
         const headers = new Headers(this.config.customHeaders as HeadersInit)
         headers.set('Content-Type', 'application/json; charset=utf-8')
         if (this.config.accessToken) {
             headers.set('Authorization', `token ${this.config.accessToken}`)
         }
+        addCustomUserAgent(headers)
 
         const url = buildGraphQLUrl({ request: query, baseUrl: this.config.serverEndpoint })
         return fetch(url, {
@@ -392,15 +540,36 @@ export class SourcegraphGraphQLAPIClient {
     }
 
     // make an anonymous request to the dotcom API
-    private async fetchSourcegraphDotcomAPI<T>(query: string, variables: Record<string, any>): Promise<T | Error> {
-        const url = buildGraphQLUrl({ request: query, baseUrl: this.dotcomUrl })
+    private fetchSourcegraphDotcomAPI<T>(query: string, variables: Record<string, any>): Promise<T | Error> {
+        const url = buildGraphQLUrl({ request: query, baseUrl: this.dotcomUrl.href })
+        const headers = new Headers()
+        addCustomUserAgent(headers)
         return fetch(url, {
             method: 'POST',
             body: JSON.stringify({ query, variables }),
+            headers,
         })
             .then(verifyResponseCode)
             .then(response => response.json() as T)
             .catch(error => new Error(`error fetching Sourcegraph GraphQL API: ${error} (${url})`))
+    }
+
+    // make an anonymous request to the Testing API
+    private fetchSourcegraphTestingAPI<T>(body: Record<string, any>): Promise<T | Error> {
+        const url = 'http://localhost:49300/.api/testLogging'
+        const headers = new Headers({
+            'Content-Type': 'application/json',
+        })
+        addCustomUserAgent(headers)
+
+        return fetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+        })
+            .then(verifyResponseCode)
+            .then(response => response.json() as T)
+            .catch(error => new Error(`error fetching Testing Sourcegraph API: ${error} (${url})`))
     }
 }
 
@@ -412,4 +581,5 @@ function verifyResponseCode(response: Response): Response {
 }
 
 class RepoNotFoundError extends Error {}
+
 export const isRepoNotFoundError = (value: unknown): value is RepoNotFoundError => value instanceof RepoNotFoundError

@@ -1,21 +1,16 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "module": "ESNext",
-    "rootDir": ".",
+    "module": "commonjs",
     "sourceRoot": "src",
-    "outDir": "out",
+    "rootDir": ".",
+    "outDir": "./out",
     "jsx": "react-jsx",
-    "declaration": true,
   },
-  "include": ["**/*", ".*"],
-  "exclude": ["out", "dist"],
+  "include": ["src", "./src/**/*.json"],
   "references": [
     {
       "path": "../cody-shared",
-    },
-    {
-      "path": "../common",
     },
   ],
 }

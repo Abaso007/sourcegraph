@@ -4,7 +4,6 @@
 export interface BotResponseSubscriber {
     /**
      * Processes incremental content from the bot. This may be called multiple times during a turn.
-     *
      * @param content the incremental text from the bot that was addressed to the subscriber
      */
     onResponse(content: string): Promise<void>
@@ -27,7 +26,6 @@ export class BufferedBotResponseSubscriber implements BotResponseSubscriber {
      * turn with the bot's entire output provided in one shot. If the topic
      * was not mentioned, `callback` is called with `undefined` signifying the
      * end of a turn.
-     *
      * @param callback the callback to handle content from the bot, if any.
      */
     constructor(private callback: (content: string | undefined) => Promise<void>) {}
@@ -50,7 +48,6 @@ export class BufferedBotResponseSubscriber implements BotResponseSubscriber {
  *
  * For example, `splitAt('banana!', 2) => ['ba', 'nana!']`
  * but `splitAt('banana!', 2, 4) => ['ba', 'na!']`
- *
  * @param str the string to split.
  * @param startIndex the index to break the left substring from the rest.
  * @param endIndex the index to break the right substring from the rest, for
@@ -58,13 +55,12 @@ export class BufferedBotResponseSubscriber implements BotResponseSubscriber {
  * @returns an array with the two substring pieces.
  */
 function splitAt(str: string, startIndex: number, endIndex?: number): [string, string] {
-    return [str.slice(0, startIndex), str.slice(typeof endIndex === 'undefined' ? startIndex : endIndex)]
+    return [str.slice(0, startIndex), str.slice(endIndex === undefined ? startIndex : endIndex)]
 }
 
 /**
  * Extracts the tag name from something that looks like a simple XML tag. This is
  * how BotResponseMultiplexer informs the LLM to address specific topics.
- *
  * @param tag the tag, including angle brackets, to extract the topic name from.
  * @returns the topic name.
  */
@@ -103,10 +99,10 @@ export class BotResponseMultiplexer {
 
     // Buffers responses until topics can be parsed
     private buffer_ = ''
+    private publishInProgress_ = Promise.resolve()
 
     /**
      * Subscribes to a topic in the bot response. Each topic can have only one subscriber at a time. New subscribers overwrite old ones.
-     *
      * @param topic the string prefix to subscribe to.
      * @param subscriber the handler for the content produced by the bot.
      */
@@ -122,6 +118,9 @@ export class BotResponseMultiplexer {
      * Notifies all subscribers that the bot response is complete.
      */
     public async notifyTurnComplete(): Promise<void> {
+        // Ensure any existing publishing is done.
+        await this.publishInProgress_
+
         // Flush buffered content, if any
         if (this.buffer_) {
             const content = this.buffer_
@@ -139,18 +138,21 @@ export class BotResponseMultiplexer {
     /**
      * Parses part of a compound response from the bot and forwards as much as possible to
      * subscribers.
-     *
      * @param response the text of the next incremental response from the bot.
      */
-    public async publish(response: string): Promise<void> {
-        // This is basically a loose parser of an XML-like language which forwards
-        // incremental content to subscribers which handle specific tags. The parser
-        // is forgiving if tags are not closed in the right order.
+    public publish(response: string): Promise<void> {
+        // If an existing publication hasn't finished, convoy behind that one.
+        return (this.publishInProgress_ = this.publishInProgress_.then(() => this.publishStep(response)))
+    }
 
+    // This is basically a loose parser of an XML-like language which forwards
+    // incremental content to subscribers which handle specific tags. The parser
+    // is forgiving if tags are not closed in the right order.
+    private async publishStep(response: string): Promise<void> {
         this.buffer_ += response
         let last
         while (this.buffer_) {
-            if (typeof last !== 'undefined' && last === this.buffer_.length) {
+            if (last !== undefined && last === this.buffer_.length) {
                 throw new Error(`did not make progress parsing: ${this.buffer_}`)
             }
             last = this.buffer_.length
@@ -161,7 +163,7 @@ export class BotResponseMultiplexer {
                 await this.publishBufferUpTo(this.buffer_.length)
                 return
             }
-            if (typeof match.index === 'undefined') {
+            if (match.index === undefined) {
                 throw new TypeError('unreachable')
             }
             if (match.index) {
@@ -207,8 +209,8 @@ export class BotResponseMultiplexer {
 
     // Publishes the content of `buffer_` up to `index` in the current topic. Discards the published content.
     private publishBufferUpTo(index: number): Promise<void> {
-        let content
-        ;[content, this.buffer_] = splitAt(this.buffer_, index)
+        const [content, remaining] = splitAt(this.buffer_, index)
+        this.buffer_ = remaining
         return this.publishInTopic(this.currentTopic, content)
     }
 

@@ -94,8 +94,8 @@ func TestIndexedSearch(t *testing.T) {
 			},
 			wantCommon: streaming.Stats{
 				Status: mkStatusMap(map[string]search.RepoStatus{
-					"foo/bar":    search.RepoStatusTimedout,
-					"foo/foobar": search.RepoStatusTimedout,
+					"foo/bar":    search.RepoStatusTimedOut,
+					"foo/foobar": search.RepoStatusTimedOut,
 				}),
 			},
 		},
@@ -310,6 +310,7 @@ func TestIndexedSearch(t *testing.T) {
 			zoektParams := &search.ZoektParameters{
 				FileMatchLimit: tt.args.fileMatchLimit,
 				Select:         tt.args.selectPath,
+				Typ:            search.TextRequest,
 			}
 
 			zoektJob := &RepoSubsetTextSearchJob{
@@ -375,7 +376,7 @@ func TestZoektIndexedRepos(t *testing.T) {
 		"foo/unindexed-two",
 	)
 
-	zoektRepos := map[uint32]*zoekt.MinimalRepoListEntry{}
+	zoektRepos := zoekt.ReposMap{}
 	for i, branches := range [][]zoekt.RepositoryBranch{
 		{
 			{Name: "HEAD", Version: "deadbeef"},
@@ -393,7 +394,7 @@ func TestZoektIndexedRepos(t *testing.T) {
 	} {
 		r := repos[i]
 		branches := branches
-		zoektRepos[uint32(r.Repo.ID)] = &zoekt.MinimalRepoListEntry{Branches: branches}
+		zoektRepos[uint32(r.Repo.ID)] = zoekt.MinimalRepoListEntry{Branches: branches}
 	}
 
 	cases := []struct {
@@ -453,7 +454,7 @@ func TestZoektIndexedRepos_single(t *testing.T) {
 			Revs: []string{revSpec},
 		}
 	}
-	zoektRepos := map[uint32]*zoekt.MinimalRepoListEntry{
+	zoektRepos := zoekt.ReposMap{
 		1: {
 			Branches: []zoekt.RepositoryBranch{
 				{
@@ -598,6 +599,18 @@ func TestZoektFileMatchToSymbolResults(t *testing.T) {
 				Start: zoekt.Location{LineNumber: 20, Column: 38},
 			}},
 			SymbolInfo: []*zoekt.Symbol{symbolInfo("baz")},
+		}, {
+			// Test we dedup when we have two results for foobar.
+			Content:      []byte("symbol foobar symbol bam"),
+			ContentStart: zoekt.Location{LineNumber: 25, Column: 1},
+			Ranges: []zoekt.Range{{
+				Start: zoekt.Location{LineNumber: 25, Column: 8},
+			}, {
+				Start: zoekt.Location{LineNumber: 25, Column: 11},
+			}, {
+				Start: zoekt.Location{LineNumber: 25, Column: 23},
+			}},
+			SymbolInfo: []*zoekt.Symbol{symbolInfo("foobar"), symbolInfo("foobar"), symbolInfo("bam")},
 		}},
 	}
 
@@ -623,6 +636,14 @@ func TestZoektFileMatchToSymbolResults(t *testing.T) {
 		Name:      "baz",
 		Line:      20,
 		Character: 37,
+	}, {
+		Name:      "foobar",
+		Line:      25,
+		Character: 7,
+	}, {
+		Name:      "bam",
+		Line:      25,
+		Character: 22,
 	},
 	}
 	for i := range want {
@@ -718,7 +739,7 @@ func TestContextWithoutDeadline(t *testing.T) {
 	ctxWithDeadline, cancelWithDeadline := context.WithTimeout(context.Background(), time.Minute)
 	defer cancelWithDeadline()
 
-	tr, ctxWithDeadline := trace.New(ctxWithDeadline, "", "")
+	tr, ctxWithDeadline := trace.New(ctxWithDeadline, "")
 
 	if _, ok := ctxWithDeadline.Deadline(); !ok {
 		t.Fatal("expected context to have deadline")
@@ -732,7 +753,7 @@ func TestContextWithoutDeadline(t *testing.T) {
 	}
 
 	// We want to keep trace info
-	if tr2 := trace.TraceFromContext(ctxNoDeadline); tr != tr2 {
+	if tr2 := trace.FromContext(ctxNoDeadline); !tr.SpanContext().Equal(tr2.SpanContext()) {
 		t.Error("trace information not propogated")
 	}
 

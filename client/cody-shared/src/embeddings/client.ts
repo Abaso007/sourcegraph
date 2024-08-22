@@ -1,6 +1,6 @@
-import { SourcegraphGraphQLAPIClient, EmbeddingsSearchResults } from '../sourcegraph-api/graphql'
+import type { EmbeddingsSearchResults, SourcegraphGraphQLAPIClient } from '../sourcegraph-api/graphql'
 
-import { EmbeddingsSearch } from '.'
+import type { EmbeddingsSearch } from '.'
 
 export class SourcegraphEmbeddingsSearchClient implements EmbeddingsSearch {
     constructor(private client: SourcegraphGraphQLAPIClient, private repoId: string, private web: boolean = false) {}

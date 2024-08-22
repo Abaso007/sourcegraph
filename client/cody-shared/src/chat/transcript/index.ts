@@ -1,10 +1,10 @@
-import { ContextFile, ContextMessage, OldContextMessage } from '../../codebase-context/messages'
+import type { ContextFile, ContextMessage, OldContextMessage, PreciseContext } from '../../codebase-context/messages'
 import { CHARS_PER_TOKEN, MAX_AVAILABLE_PROMPT_LENGTH } from '../../prompt/constants'
 import { PromptMixin } from '../../prompt/prompt-mixin'
-import { Message } from '../../sourcegraph-api'
+import type { Message } from '../../sourcegraph-api'
 
-import { Interaction, InteractionJSON } from './interaction'
-import { ChatMessage } from './messages'
+import { Interaction, type InteractionJSON } from './interaction'
+import type { ChatMessage } from './messages'
 
 export interface TranscriptJSONScope {
     includeInferredRepository: boolean
@@ -28,7 +28,15 @@ export class Transcript {
     public static fromJSON(json: TranscriptJSON): Transcript {
         return new Transcript(
             json.interactions.map(
-                ({ humanMessage, assistantMessage, context, fullContext, usedContextFiles, timestamp }) => {
+                ({
+                    humanMessage,
+                    assistantMessage,
+                    context,
+                    fullContext,
+                    usedContextFiles,
+                    usedPreciseContext,
+                    timestamp,
+                }) => {
                     if (!fullContext) {
                         fullContext = context || []
                     }
@@ -50,6 +58,7 @@ export class Transcript {
                             })
                         ),
                         usedContextFiles || [],
+                        usedPreciseContext || [],
                         timestamp || new Date().toISOString()
                     )
                 }
@@ -98,7 +107,7 @@ export class Transcript {
     }
 
     public getLastInteraction(): Interaction | null {
-        return this.interactions.length > 0 ? this.interactions[this.interactions.length - 1] : null
+        return this.interactions.length > 0 ? this.interactions.at(-1)! : null
     }
 
     public removeLastInteraction(): void {
@@ -123,7 +132,6 @@ export class Transcript {
     /**
      * Adds a error div to the assistant response. If the assistant has collected
      * some response before, we will add the error message after it.
-     *
      * @param errorText The error TEXT to be displayed. Do not wrap it in HTML tags.
      */
     public addErrorAsAssistantResponse(errorText: string): void {
@@ -153,10 +161,11 @@ export class Transcript {
 
     public async getPromptForLastInteraction(
         preamble: Message[] = [],
-        maxPromptLength: number = MAX_AVAILABLE_PROMPT_LENGTH
-    ): Promise<{ prompt: Message[]; contextFiles: ContextFile[] }> {
+        maxPromptLength: number = MAX_AVAILABLE_PROMPT_LENGTH,
+        onlyHumanMessages: boolean = false
+    ): Promise<{ prompt: Message[]; contextFiles: ContextFile[]; preciseContexts: PreciseContext[] }> {
         if (this.interactions.length === 0) {
-            return { prompt: [], contextFiles: [] }
+            return { prompt: [], contextFiles: [], preciseContexts: [] }
         }
 
         const lastInteractionWithContextIndex = await this.getLastInteractionWithContextIndex()
@@ -166,7 +175,7 @@ export class Transcript {
             const humanMessage = PromptMixin.mixInto(interaction.getHumanMessage())
             const assistantMessage = interaction.getAssistantMessage()
             const contextMessages = await interaction.getFullContext()
-            if (index === lastInteractionWithContextIndex) {
+            if (index === lastInteractionWithContextIndex && !onlyHumanMessages) {
                 messages.push(...contextMessages, humanMessage, assistantMessage)
             } else {
                 messages.push(humanMessage, assistantMessage)
@@ -175,13 +184,18 @@ export class Transcript {
 
         const preambleTokensUsage = preamble.reduce((acc, message) => acc + estimateTokensUsage(message), 0)
         let truncatedMessages = truncatePrompt(messages, maxPromptLength - preambleTokensUsage)
-
         // Return what context fits in the window
         const contextFiles: ContextFile[] = []
+        const preciseContexts: PreciseContext[] = []
         for (const msg of truncatedMessages) {
             const contextFile = (msg as ContextMessage).file
             if (contextFile) {
                 contextFiles.push(contextFile)
+            }
+
+            const preciseContext = (msg as ContextMessage).preciseContext
+            if (preciseContext) {
+                preciseContexts.push(preciseContext)
             }
         }
 
@@ -191,14 +205,18 @@ export class Transcript {
         return {
             prompt: [...preamble, ...truncatedMessages],
             contextFiles,
+            preciseContexts,
         }
     }
 
-    public setUsedContextFilesForLastInteraction(contextFiles: ContextFile[]): void {
+    public setUsedContextFilesForLastInteraction(
+        contextFiles: ContextFile[],
+        preciseContexts: PreciseContext[] = []
+    ): void {
         if (this.interactions.length === 0) {
             throw new Error('Cannot set context files for empty transcript')
         }
-        this.interactions[this.interactions.length - 1].setUsedContext(contextFiles)
+        this.interactions.at(-1)!.setUsedContext(contextFiles, preciseContexts)
     }
 
     public toChat(): ChatMessage[] {

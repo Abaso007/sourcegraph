@@ -72,10 +72,10 @@ func (s *service) UserFromContext(ctx context.Context) (*schema.Settings, error)
 }
 
 func (s *service) ForSubject(ctx context.Context, subject api.SettingsSubject) (_ *schema.Settings, err error) {
-	tr, ctx := trace.New(ctx, "settings", "ForSubject")
+	tr, ctx := trace.New(ctx, "settings.ForSubject")
 	defer func() {
 		tr.SetError(err)
-		tr.Finish()
+		tr.End()
 	}()
 
 	subjects, err := s.RelevantSubjects(ctx, subject)
@@ -203,7 +203,7 @@ func mergeLeft(left, right reflect.Value, depth int) reflect.Value {
 			return right
 		}
 		leftType := left.Type()
-		for i := 0; i < left.NumField(); i++ {
+		for i := range left.NumField() {
 			fieldName := leftType.Field(i).Name
 			leftField := left.Field(i)
 			rightField := right.Field(i)

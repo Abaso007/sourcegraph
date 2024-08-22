@@ -1,6 +1,6 @@
 import { isError } from '../../utils'
 
-import { Event } from './types'
+import type { Event } from './types'
 
 const EVENT_LINE_PREFIX = 'event: '
 const DATA_LINE_PREFIX = 'data: '
@@ -14,10 +14,12 @@ function parseEventType(eventLine: string): Event['type'] | Error {
     switch (eventType) {
         case 'completion':
         case 'error':
-        case 'done':
+        case 'done': {
             return eventType
-        default:
+        }
+        default: {
             return new Error(`unexpected event type: ${eventType}`)
+        }
     }
 }
 
@@ -56,8 +58,9 @@ function parseEventData(eventType: Event['type'], dataLine: string): Event | Err
             }
             return { type: eventType, error: data.error }
         }
-        case 'done':
+        case 'done': {
             return { type: eventType }
+        }
     }
 }
 

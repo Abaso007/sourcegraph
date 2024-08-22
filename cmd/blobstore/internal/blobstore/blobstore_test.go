@@ -11,10 +11,11 @@ import (
 
 	"github.com/hexops/autogold/v2"
 	"github.com/sourcegraph/log/logtest"
+	"github.com/stretchr/testify/require"
 
 	"github.com/sourcegraph/sourcegraph/cmd/blobstore/internal/blobstore"
+	"github.com/sourcegraph/sourcegraph/internal/object"
 	"github.com/sourcegraph/sourcegraph/internal/observation"
-	"github.com/sourcegraph/sourcegraph/internal/uploadstore"
 )
 
 // Initialize uploadstore, shutdown.
@@ -45,7 +46,7 @@ func TestGetNotExists(t *testing.T) {
 	assertObjectDoesNotExist(ctx, store, t, "does-not-exist-key")
 }
 
-func assertObjectDoesNotExist(ctx context.Context, store uploadstore.Store, t *testing.T, key string) {
+func assertObjectDoesNotExist(ctx context.Context, store object.Storage, t *testing.T, key string) {
 	reader, err := store.Get(ctx, key)
 	if err != nil {
 		t.Fatal("expected a reader, got an error", err)
@@ -110,6 +111,78 @@ func TestGetExists(t *testing.T) {
 		len(data),
 		string(data),
 	})
+}
+
+// Initialize uploadstore, upload objects, list the keys
+func TestList(t *testing.T) {
+	ctx := context.Background()
+	store, server, _ := initTestStore(ctx, t, t.TempDir())
+	defer server.Close()
+
+	// Upload three objects
+	uploaded, err := store.Upload(ctx, "foobar1", strings.NewReader("Hello 1! "))
+	autogold.Expect([]interface{}{9, "<nil>"}).Equal(t, []any{uploaded, fmt.Sprint(err)})
+
+	uploaded, err = store.Upload(ctx, "foobar2", strings.NewReader("Hello 3!"))
+	autogold.Expect([]interface{}{8, "<nil>"}).Equal(t, []any{uploaded, fmt.Sprint(err)})
+
+	uploaded, err = store.Upload(ctx, "banana", strings.NewReader("Hello 2! "))
+	autogold.Expect([]interface{}{9, "<nil>"}).Equal(t, []any{uploaded, fmt.Sprint(err)})
+
+	tc := []struct {
+		prefix string
+		keys   []string
+	}{
+		{
+			prefix: "foobar",
+			keys:   []string{"foobar1", "foobar2"},
+		},
+		{
+			prefix: "banana",
+			keys:   []string{"banana"},
+		},
+		{
+			prefix: "",
+			keys:   []string{"banana", "foobar1", "foobar2"},
+		},
+	}
+
+	for _, c := range tc {
+		t.Run(c.prefix, func(t *testing.T) {
+			iter, err := store.List(ctx, c.prefix)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var keys []string
+			for iter.Next() {
+				keys = append(keys, iter.Current())
+			}
+
+			require.Equal(t, c.keys, keys)
+		},
+		)
+	}
+}
+
+func TestListEmpty(t *testing.T) {
+	ctx := context.Background()
+	store, server, _ := initTestStore(ctx, t, t.TempDir())
+	defer server.Close()
+
+	iter, err := store.List(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var keys []string
+	for iter.Next() {
+		keys = append(keys, iter.Current())
+	}
+
+	if len(keys) != 0 {
+		t.Fatalf("expected 0 keys but got %v", keys)
+	}
 }
 
 // Initialize uploadstore, upload two objects, compose them together
@@ -208,7 +281,7 @@ func TestExpireObjects(t *testing.T) {
 	assertObjectDoesNotExist(ctx, store, t, "foobar2")
 }
 
-func initTestStore(ctx context.Context, t *testing.T, dataDir string) (uploadstore.Store, *httptest.Server, *blobstore.Service) {
+func initTestStore(ctx context.Context, t *testing.T, dataDir string) (object.Storage, *httptest.Server, *blobstore.Service) {
 	observationCtx := observation.TestContextTB(t)
 	svc := &blobstore.Service{
 		DataDir:        dataDir,
@@ -218,20 +291,22 @@ func initTestStore(ctx context.Context, t *testing.T, dataDir string) (uploadsto
 	}
 	ts := httptest.NewServer(svc)
 
-	config := uploadstore.Config{
+	config := object.StorageConfig{
 		Backend:      "blobstore",
 		ManageBucket: false,
 		Bucket:       "lsif-uploads",
-		TTL:          168 * time.Hour,
-		S3: uploadstore.S3Config{
+		S3: object.S3Config{
 			Region:       "us-east-1",
 			Endpoint:     ts.URL,
 			UsePathStyle: false,
+			// NOTE: we do not set AccessKeyID and SecretAccessKey
+			// intentionally since most uses of blobstore do not use
+			// credentials and we want to confirm s3 client doesn't break.
 		},
 	}
-	store, err := uploadstore.CreateLazy(ctx, config, uploadstore.NewOperations(observationCtx, "test", "lsifstore"))
+	store, err := object.CreateLazyStorage(ctx, config, object.NewOperations(observationCtx, "test", "lsifstore"))
 	if err != nil {
-		t.Fatal("CreateLazy", err)
+		t.Fatal("CreateLazyStorage", err)
 	}
 	if err := store.Init(ctx); err != nil {
 		t.Fatal("Init", err)

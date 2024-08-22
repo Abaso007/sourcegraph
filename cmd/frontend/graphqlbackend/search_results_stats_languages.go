@@ -8,11 +8,11 @@ import (
 	"github.com/sourcegraph/conc/pool"
 	"github.com/sourcegraph/log"
 
-	"github.com/sourcegraph/sourcegraph/cmd/frontend/backend"
+	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/backend"
+	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/inventory"
 	"github.com/sourcegraph/sourcegraph/internal/api"
 	"github.com/sourcegraph/sourcegraph/internal/database"
 	"github.com/sourcegraph/sourcegraph/internal/gitserver"
-	"github.com/sourcegraph/sourcegraph/internal/inventory"
 	"github.com/sourcegraph/sourcegraph/internal/search/job/jobutil"
 	"github.com/sourcegraph/sourcegraph/internal/search/query"
 	"github.com/sourcegraph/sourcegraph/internal/search/result"
@@ -27,8 +27,8 @@ func (srs *searchResultsStats) Languages(ctx context.Context) ([]*languageStatis
 		return nil, err
 	}
 
-	logger := srs.logger.Scoped("languages", "provide stats on langauges from the search results")
-	langs, err := searchResultsStatsLanguages(ctx, logger, srs.sr.db, gitserver.NewClient(), matches)
+	logger := srs.logger.Scoped("languages")
+	langs, err := searchResultsStatsLanguages(ctx, logger, srs.sr.db, gitserver.NewClient("graphql.searchresultlanguages"), matches)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +47,7 @@ func (srs *searchResultsStats) getResults(ctx context.Context) (result.Matches, 
 			srs.err = err
 			return
 		}
-		j, err := jobutil.NewBasicJob(srs.sr.SearchInputs, b, srs.sr.enterpriseJobs)
+		j, err := jobutil.NewBasicJob(srs.sr.SearchInputs, b)
 		if err != nil {
 			srs.err = err
 			return
@@ -128,12 +128,12 @@ func searchResultsStatsLanguages(ctx context.Context, logger log.Logger, db data
 		} else if repoMatch, ok := res.(*result.RepoMatch); ok && !hasNonRepoMatches {
 			sawRepo(repoMatch.RepoName())
 			p.Go(func() error {
-				repoName := repoMatch.RepoName()
-				_, oid, err := gsClient.GetDefaultBranch(ctx, repoName.Name, false)
+				repoName := repoMatch.Name
+				_, oid, err := gsClient.GetDefaultBranch(ctx, repoName, false)
 				if err != nil {
 					return err
 				}
-				inv, err := backend.NewRepos(logger, db, gsClient).GetInventory(ctx, repoName.ToRepo(), oid, true)
+				inv, err := backend.NewRepos(logger, db, gsClient).GetInventory(ctx, repoName, oid, true)
 				if err != nil {
 					return err
 				}

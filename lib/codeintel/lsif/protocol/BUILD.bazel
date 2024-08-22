@@ -1,4 +1,5 @@
 load("@io_bazel_rules_go//go:def.bzl", "go_library")
+load("//dev:go_stringer.bzl", "go_stringer")
 
 go_library(
     name = "protocol",
@@ -25,5 +26,18 @@ go_library(
         "type_definition.go",
     ],
     importpath = "github.com/sourcegraph/sourcegraph/lib/codeintel/lsif/protocol",
+    tags = [TAG_PLATFORM_GRAPH],
     visibility = ["//visibility:public"],
+)
+
+go_stringer(
+    name = "symbol_kind",
+    src = "symbol.go",
+    typ = "SymbolKind",
+)
+
+go_stringer(
+    name = "symbol_tag",
+    src = "symbol.go",
+    typ = "SymbolTag",
 )

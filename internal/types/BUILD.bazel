@@ -9,9 +9,11 @@ go_library(
         "cursor.go",
         "executors.go",
         "external_services.go",
+        "namespace.go",
         "outbound_webhook_jobs.go",
         "outbound_webhook_logs.go",
         "outbound_webhooks.go",
+        "prompts.go",
         "saved_searches.go",
         "secret.go",
         "types.go",
@@ -21,6 +23,7 @@ go_library(
     visibility = ["//:__subpackages__"],
     deps = [
         "//internal/api",
+        "//internal/conf/conftypes",
         "//internal/database/dbutil",
         "//internal/encryption",
         "//internal/executor",
@@ -38,9 +41,13 @@ go_library(
 go_test(
     name = "types_test",
     timeout = "short",
-    srcs = ["secret_test.go"],
+    srcs = [
+        "secret_test.go",
+        "types_test.go",
+    ],
     embed = [":types"],
     deps = [
+        "//internal/api",
         "//internal/extsvc",
         "//schema",
         "@com_github_stretchr_testify//assert",

@@ -1,16 +1,15 @@
 import { fetchEventSource } from '@microsoft/fetch-event-source'
 
+import { addCustomUserAgent } from '../graphql/client'
+
 import { SourcegraphCompletionsClient } from './client'
-import type { Event, CompletionParameters, CompletionCallbacks, CompletionResponse } from './types'
+import type { CompletionCallbacks, CompletionParameters, Event } from './types'
 
 export class SourcegraphBrowserCompletionsClient extends SourcegraphCompletionsClient {
-    public complete(): Promise<CompletionResponse> {
-        throw new Error('SourcegraphBrowserCompletionsClient.complete not implemented')
-    }
-
     public stream(params: CompletionParameters, cb: CompletionCallbacks): () => void {
         const abort = new AbortController()
         const headersInstance = new Headers(this.config.customHeaders as HeadersInit)
+        addCustomUserAgent(headersInstance)
         headersInstance.set('Content-Type', 'application/json; charset=utf-8')
         if (this.config.accessToken) {
             headersInstance.set('Authorization', `token ${this.config.accessToken}`)
@@ -25,6 +24,7 @@ export class SourcegraphBrowserCompletionsClient extends SourcegraphCompletionsC
             headers: Object.fromEntries(headersInstance.entries()),
             body: JSON.stringify(params),
             signal: abort.signal,
+            openWhenHidden: isRunningInWebWorker, // otherwise tries to call document.addEventListener
             async onopen(response) {
                 if (!response.ok && response.headers.get('content-type') !== 'text/event-stream') {
                     let errorMessage: null | string = null
@@ -32,6 +32,7 @@ export class SourcegraphBrowserCompletionsClient extends SourcegraphCompletionsC
                         errorMessage = await response.text()
                     } catch (error) {
                         // We show the generic error message in this case
+                        // eslint-disable-next-line no-console
                         console.error(error)
                     }
                     cb.onError(
@@ -45,21 +46,46 @@ export class SourcegraphBrowserCompletionsClient extends SourcegraphCompletionsC
                 }
             },
             onmessage: message => {
-                const data: Event = { ...JSON.parse(message.data), type: message.event }
-                this.sendEvents([data], cb)
+                try {
+                    const data: Event = { ...JSON.parse(message.data), type: message.event }
+                    this.sendEvents([data], cb)
+                } catch (error: any) {
+                    cb.onError(error.message)
+                    abort.abort()
+                    // eslint-disable-next-line no-console
+                    console.error(error)
+                    // throw the error for not retrying
+                    throw error
+                }
             },
             onerror(error) {
                 cb.onError(error.message)
                 abort.abort()
+                // eslint-disable-next-line no-console
                 console.error(error)
+                // throw the error for not retrying
+                throw error
             },
         }).catch(error => {
             cb.onError(error.message)
             abort.abort()
+            // eslint-disable-next-line no-console
             console.error(error)
         })
         return () => {
             abort.abort()
         }
+    }
+}
+
+declare const WorkerGlobalScope: never
+// eslint-disable-next-line unicorn/no-typeof-undefined
+const isRunningInWebWorker = typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope
+
+if (isRunningInWebWorker) {
+    // HACK: @microsoft/fetch-event-source tries to call document.removeEventListener, which is not
+    // available in a worker.
+    ;(self as any).document = {
+        removeEventListener: () => {},
     }
 }

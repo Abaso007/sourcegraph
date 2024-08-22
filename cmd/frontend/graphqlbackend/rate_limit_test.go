@@ -1,6 +1,7 @@
 package graphqlbackend
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -29,8 +30,9 @@ query{
 }
 `,
 			want: QueryCost{
-				FieldCount: 2,
-				MaxDepth:   1,
+				FieldCount:       2,
+				UniqueFieldCount: 2,
+				MaxDepth:         1,
 			},
 		},
 		{
@@ -45,8 +47,9 @@ query SiteProductVersion {
             }
 `,
 			want: QueryCost{
-				FieldCount: 4,
-				MaxDepth:   2,
+				FieldCount:       4,
+				UniqueFieldCount: 4,
+				MaxDepth:         2,
 			},
 		},
 		{
@@ -63,8 +66,9 @@ query{
 }
 `,
 			want: QueryCost{
-				FieldCount: 22,
-				MaxDepth:   3,
+				FieldCount:       22,
+				UniqueFieldCount: 5,
+				MaxDepth:         3,
 			},
 		},
 		{
@@ -83,8 +87,9 @@ query fetchExternalServices($first: Int = 10){
 				"first": 5,
 			},
 			want: QueryCost{
-				FieldCount: 11,
-				MaxDepth:   3,
+				FieldCount:       11,
+				UniqueFieldCount: 4,
+				MaxDepth:         3,
 			},
 		},
 		{
@@ -101,8 +106,9 @@ query fetchExternalServices($first: Int = 10){
 `,
 			variables: map[string]any{},
 			want: QueryCost{
-				FieldCount: 21,
-				MaxDepth:   3,
+				FieldCount:       21,
+				UniqueFieldCount: 4,
+				MaxDepth:         3,
 			},
 		},
 		{
@@ -131,8 +137,10 @@ query StatusMessages {
  }
 `,
 			want: QueryCost{
-				FieldCount: 5,
-				MaxDepth:   2,
+				FieldCount:                 5,
+				UniqueFieldCount:           5,
+				HighestDuplicateFieldCount: 3,
+				MaxDepth:                   2,
 			},
 		},
 		{
@@ -150,8 +158,10 @@ query{
 }
 `,
 			want: QueryCost{
-				FieldCount: 2,
-				MaxDepth:   2,
+				FieldCount:                 2,
+				HighestDuplicateFieldCount: 2,
+				UniqueFieldCount:           3,
+				MaxDepth:                   2,
 			},
 		},
 		{
@@ -295,8 +305,10 @@ query Search($query: String!, $version: SearchVersion!, $patternType: SearchPatt
 }
 `,
 			want: QueryCost{
-				FieldCount: 50,
-				MaxDepth:   9,
+				FieldCount:                 50,
+				HighestDuplicateFieldCount: 10,
+				UniqueFieldCount:           51, // includes __typename which fieldcount skips
+				MaxDepth:                   9,
 			},
 		},
 		{
@@ -323,8 +335,9 @@ fragment FileDiffFields on FileDiff {
 }
 `,
 			want: QueryCost{
-				FieldCount: 7,
-				MaxDepth:   5,
+				FieldCount:       7,
+				MaxDepth:         5,
+				UniqueFieldCount: 5,
 			},
 			variables: map[string]any{
 				"base": "a46cf4a8b6dc42ea7b7b716e53c49dd3508a8678",
@@ -347,8 +360,9 @@ fragment BarFields on Bar {
 }
 `,
 			want: QueryCost{
-				FieldCount: 1,
-				MaxDepth:   1,
+				FieldCount:       1,
+				MaxDepth:         1,
+				UniqueFieldCount: 1,
 			},
 		},
 		{
@@ -371,8 +385,9 @@ fragment UsableFields on Usable {
 }
 `,
 			want: QueryCost{
-				FieldCount: 3,
-				MaxDepth:   2,
+				FieldCount:       3,
+				MaxDepth:         2,
+				UniqueFieldCount: 1,
 			},
 		},
 	} {
@@ -415,7 +430,7 @@ func TestBasicLimiterEnabled(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("limit:%d", tt.limit), func(t *testing.T) {
-			store, err := memstore.New(1)
+			store, err := memstore.NewCtx(1)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -435,7 +450,7 @@ func TestBasicLimiterEnabled(t *testing.T) {
 }
 
 func TestBasicLimiter(t *testing.T) {
-	store, err := memstore.New(1)
+	store, err := memstore.NewCtx(1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +473,7 @@ func TestBasicLimiter(t *testing.T) {
 	}
 
 	// 1st call should not be limited.
-	limited, _, err := limiter.RateLimit("", 1, limiterArgs)
+	limited, _, err := limiter.RateLimit(context.Background(), "", 1, limiterArgs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,7 +482,7 @@ func TestBasicLimiter(t *testing.T) {
 	}
 
 	// 2nd call should be limited.
-	limited, _, err = limiter.RateLimit("", 1, limiterArgs)
+	limited, _, err = limiter.RateLimit(context.Background(), "", 1, limiterArgs)
 	if err != nil {
 		t.Fatal(err)
 	}

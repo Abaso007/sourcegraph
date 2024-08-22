@@ -22,7 +22,7 @@ import (
 	"github.com/sourcegraph/sourcegraph/internal/database/postgresdsn"
 	"github.com/sourcegraph/sourcegraph/internal/observation"
 	"github.com/sourcegraph/sourcegraph/internal/oobmigration"
-	"github.com/sourcegraph/sourcegraph/internal/oobmigration/migrations"
+	"github.com/sourcegraph/sourcegraph/internal/oobmigration/migrations/register"
 	"github.com/sourcegraph/sourcegraph/internal/service"
 	"github.com/sourcegraph/sourcegraph/internal/version"
 	"github.com/sourcegraph/sourcegraph/internal/version/upgradestore"
@@ -171,7 +171,7 @@ func runMigration(
 	enterpriseMigratorsHook store.RegisterMigratorsUsingConfAndStoreFactoryFunc,
 ) error {
 	registerMigrators := store.ComposeRegisterMigratorsFuncs(
-		migrations.RegisterOSSMigratorsUsingConfAndStoreFactory,
+		register.RegisterOSSMigratorsUsingConfAndStoreFactory,
 		enterpriseMigratorsHook,
 	)
 
@@ -327,7 +327,7 @@ func heartbeatLoop(logger log.Logger, db database.DB) (func(), error) {
 
 func checkForDisconnects(ctx context.Context, _ log.Logger, db database.DB) (remaining []string, err error) {
 	query := sqlf.Sprintf(`SELECT DISTINCT(application_name) FROM pg_stat_activity
-			WHERE application_name <> '' AND application_name <> %s AND application_name <> 'psql'`,
+			WHERE application_name <> '' AND application_name <> %s AND application_name <> 'psql' AND datname = current_database()`,
 		appName)
 	store := basestore.NewWithHandle(db.Handle())
 	remaining, err = basestore.ScanStrings(store.Query(ctx, query))

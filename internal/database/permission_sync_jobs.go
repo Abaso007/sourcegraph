@@ -160,6 +160,7 @@ func (r PermissionsSyncJobReason) ResolveGroup() PermissionsSyncJobReasonGroup {
 		return PermissionsSyncJobReasonGroupSchedule
 	case ReasonUserEmailRemoved,
 		ReasonUserEmailVerified,
+		ReasonUserAdded,
 		ReasonUserAddedToOrg,
 		ReasonUserRemovedFromOrg,
 		ReasonUserAcceptedOrgInvite,
@@ -184,6 +185,7 @@ const (
 	// to Sourcegraph internal events.
 	ReasonUserEmailRemoved       PermissionsSyncJobReason = "REASON_USER_EMAIL_REMOVED"
 	ReasonUserEmailVerified      PermissionsSyncJobReason = "REASON_USER_EMAIL_VERIFIED"
+	ReasonUserAdded              PermissionsSyncJobReason = "REASON_USER_ADDED"
 	ReasonUserAddedToOrg         PermissionsSyncJobReason = "REASON_USER_ADDED_TO_ORG"
 	ReasonUserRemovedFromOrg     PermissionsSyncJobReason = "REASON_USER_REMOVED_FROM_ORG"
 	ReasonUserAcceptedOrgInvite  PermissionsSyncJobReason = "REASON_USER_ACCEPTED_ORG_INVITE"
@@ -699,16 +701,29 @@ func (s *permissionSyncJobStore) Count(ctx context.Context, opts ListPermissionS
 }
 
 const countUsersWithFailingSyncJobsQuery = `
-SELECT COUNT(*)
-FROM (
-  SELECT DISTINCT ON (user_id) id, state
-  FROM permission_sync_jobs
+WITH latest_user_sync_jobs AS (
+  SELECT
+    DISTINCT ON (user_id) user_id,
+    id,
+    state
+  FROM
+    permission_sync_jobs
   WHERE
-	user_id is NOT NULL
-	AND state IN ('completed', 'failed')
-  ORDER BY user_id, finished_at DESC
-) AS tmp
-WHERE state = 'failed';
+    user_id IS NOT NULL
+    AND state IN ('completed', 'failed')
+  ORDER BY
+    user_id,
+    finished_at DESC
+)
+SELECT
+  COUNT(*)
+FROM
+  latest_user_sync_jobs
+  JOIN users ON users.id = latest_user_sync_jobs.user_id
+WHERE
+  latest_user_sync_jobs.state = 'failed'
+  AND users.deleted_at IS NULL;
+-- exclude jobs from soft-deleted users (hard deleted users are taken care of by the CASCADE foreign key constraint)
 `
 
 // CountUsersWithFailingSyncJob returns count of users with LATEST sync job failing.
@@ -721,16 +736,29 @@ func (s *permissionSyncJobStore) CountUsersWithFailingSyncJob(ctx context.Contex
 }
 
 const countReposWithFailingSyncJobsQuery = `
-SELECT COUNT(*)
-FROM (
-  SELECT DISTINCT ON (repository_id) id, state
-  FROM permission_sync_jobs
+WITH latest_repo_sync_jobs AS (
+  SELECT
+    DISTINCT ON (repository_id) repository_id,
+    id,
+    state
+  FROM
+    permission_sync_jobs
   WHERE
-	repository_id is NOT NULL
-	AND state IN ('completed', 'failed')
-  ORDER BY repository_id, finished_at DESC
-) AS tmp
-WHERE state = 'failed';
+    repository_id is NOT NULL
+    AND state IN ('completed', 'failed')
+  ORDER BY
+    repository_id,
+    finished_at DESC
+)
+SELECT
+  COUNT(*)
+FROM
+  latest_repo_sync_jobs
+  JOIN repo ON repo.id = latest_repo_sync_jobs.repository_id
+WHERE
+  latest_repo_sync_jobs.state = 'failed'
+  AND repo.deleted_at IS NULL;
+-- exclude jobs from soft-deleted repos (hard deleted repos are taken care of by the CASCADE foreign key constraint)
 `
 
 // CountReposWithFailingSyncJob returns count of repos with LATEST sync job failing.

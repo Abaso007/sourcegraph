@@ -36,6 +36,29 @@ query CurrentUser {
     }
 }`
 
+export const CURRENT_SITE_CODY_LLM_PROVIDER = `
+query CurrentSiteCodyLlmConfiguration {
+    site {
+        codyLLMConfiguration {
+            provider
+        }
+    }
+}`
+
+export const CURRENT_SITE_CODY_LLM_CONFIGURATION = `
+query CurrentSiteCodyLlmConfiguration {
+    site {
+        codyLLMConfiguration {
+            chatModel
+            chatModelMaxTokens
+            fastChatModel
+            fastChatModelMaxTokens
+            completionModel
+            completionModelMaxTokens
+        }
+    }
+}`
+
 export const REPOSITORY_ID_QUERY = `
 query Repository($name: String!) {
 	repository(name: $name) {
@@ -74,6 +97,7 @@ query Repository($name: String!) {
 export const GET_CODY_CONTEXT_QUERY = `
 query GetCodyContext($repos: [ID!]!, $query: String!, $codeResultsCount: Int!, $textResultsCount: Int!) {
 	getCodyContext(repos: $repos, query: $query, codeResultsCount: $codeResultsCount, textResultsCount: $textResultsCount) {
+                __typename
 		... on FileChunkContext {
                         blob {
                                 path
@@ -148,7 +172,10 @@ query IsContextRequiredForChatQuery($query: String!) {
 	isContextRequiredForChatQuery(query: $query)
 }`
 
-export const LOG_EVENT_MUTATION = `
+/**
+ * Deprecated following new event structure: https://github.com/sourcegraph/sourcegraph/pull/55126.
+ */
+export const LOG_EVENT_MUTATION_DEPRECATED = `
 mutation LogEventMutation($event: String!, $userCookieID: String!, $url: String!, $source: EventSource!, $argument: String, $publicArgument: String) {
     logEvent(
 		event: $event
@@ -161,3 +188,47 @@ mutation LogEventMutation($event: String!, $userCookieID: String!, $url: String!
 		alwaysNil
 	}
 }`
+
+export const LOG_EVENT_MUTATION = `
+mutation LogEventMutation($event: String!, $userCookieID: String!, $url: String!, $source: EventSource!, $argument: String, $publicArgument: String, $client: String, $connectedSiteID: String, $hashedLicenseKey: String) {
+    logEvent(
+		event: $event
+		userCookieID: $userCookieID
+		url: $url
+		source: $source
+		argument: $argument
+		publicArgument: $publicArgument
+		client: $client
+		connectedSiteID: $connectedSiteID
+		hashedLicenseKey: $hashedLicenseKey
+    ) {
+		alwaysNil
+	}
+}`
+
+export const CURRENT_SITE_IDENTIFICATION = `
+query SiteIdentification {
+	site {
+		siteID
+		productSubscription {
+			license {
+				hashedKey
+			}
+		}
+	}
+}`
+
+export const GET_FEATURE_FLAGS_QUERY = `
+    query FeatureFlags {
+        evaluatedFeatureFlags() {
+            name
+            value
+          }
+    }
+`
+
+export const EVALUATE_FEATURE_FLAG_QUERY = `
+    query EvaluateFeatureFlag($flagName: String!) {
+        evaluateFeatureFlag(flagName: $flagName)
+    }
+`

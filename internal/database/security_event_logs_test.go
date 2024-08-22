@@ -6,8 +6,11 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/sourcegraph/log/logtest"
+
+	sglog "github.com/sourcegraph/log"
 
 	"github.com/sourcegraph/sourcegraph/internal/actor"
 	"github.com/sourcegraph/sourcegraph/internal/conf"
@@ -31,7 +34,7 @@ func TestSecurityEventLogs_ValidInfo(t *testing.T) {
 	}})
 
 	logger, exportLogs := logtest.Captured(t)
-	db := NewDB(logger, dbtest.NewDB(logger, t))
+	db := NewDB(logger, dbtest.NewDB(t))
 
 	var testCases = []struct {
 		name  string
@@ -71,16 +74,19 @@ func TestSecurityEventLogs_ValidInfo(t *testing.T) {
 		},
 		{
 			name:  "JustUser",
+			actor: &actor.Actor{UID: 1}, // if we have a userID, we should have a valid actor UID
 			event: &SecurityEvent{Name: "test_event", URL: "http://sourcegraph.com", Source: "Web", UserID: 1, AnonymousUserID: ""},
 			err:   "<nil>",
 		},
 		{
 			name:  "JustAnonymous",
+			actor: &actor.Actor{AnonymousUID: "blah"},
 			event: &SecurityEvent{Name: "test_event", URL: "http://sourcegraph.com", Source: "Web", UserID: 0, AnonymousUserID: "blah"},
 			err:   "<nil>",
 		},
 		{
 			name:  "ValidInsert",
+			actor: &actor.Actor{UID: 1}, // if we have a userID, we should have a valid actor UID
 			event: &SecurityEvent{Name: "test_event", UserID: 1, URL: "http://sourcegraph.com", Source: "WEB"},
 			err:   "<nil>",
 		},
@@ -136,4 +142,32 @@ func assertEventField(t *testing.T, field map[string]any) {
 	assert.NotEmpty(t, field["argument"])
 	assert.NotEmpty(t, field["version"])
 	assert.NotEmpty(t, field["timestamp"])
+}
+
+func TestLogSecurityEvent1(t *testing.T) {
+	ctx := context.Background()
+	logger, exportLogs := logtest.Captured(t)
+
+	db := NewDB(logger, dbtest.NewDB(t))
+
+	t.Run("valid event", func(t *testing.T) {
+		err := db.SecurityEventLogs().LogSecurityEvent(ctx, SecurityEventAccessTokenCreated, "http://sourcegraph.com", 123, "AnonymousUserID", "source", nil)
+		require.NoError(t, err)
+	})
+
+	t.Run("invalid arguments", func(t *testing.T) {
+		err := db.SecurityEventLogs().LogSecurityEvent(ctx, SecurityEventAccessTokenCreated, "http://sourcegraph.com", 123, "AnonymousUserID", "source", make(chan int))
+		require.Error(t, err)
+	})
+
+	t.Run("sourcegraph operator", func(t *testing.T) {
+		ctx = actor.WithActor(context.Background(), &actor.Actor{UID: 123, SourcegraphOperator: true})
+		err := db.SecurityEventLogs().LogSecurityEvent(ctx, SecurityEventAccessTokenCreated, "http://sourcegraph.com", 123, "AnonymousUserID", "source", nil)
+		require.NoError(t, err)
+
+		logs := exportLogs()
+		for _, log := range logs {
+			require.NotEqual(t, log.Level, sglog.LevelError, "Should not return error: %v", log.Fields["error"])
+		}
+	})
 }

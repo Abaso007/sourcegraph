@@ -115,14 +115,14 @@ func newWorker[T Record](ctx context.Context, store Store[T], handler Handler[T]
 
 	// Initialize the logger
 	if options.Metrics.logger == nil {
-		options.Metrics.logger = log.Scoped("worker."+options.Name, "a worker process for "+options.WorkerHostname)
+		options.Metrics.logger = log.Scoped("worker." + options.Name)
 	}
 	options.Metrics.logger = options.Metrics.logger.With(log.String("name", options.Name))
 
 	dequeueContext, cancel := context.WithCancel(ctx)
 
 	handlerSemaphore := make(chan struct{}, options.NumHandlers)
-	for i := 0; i < options.NumHandlers; i++ {
+	for range options.NumHandlers {
 		handlerSemaphore <- struct{}{}
 	}
 
@@ -256,12 +256,13 @@ loop:
 // Stop will cause the worker loop to exit after the current iteration. This is done by canceling the
 // context passed to the dequeue operations (but not the handler operations). This method blocks until
 // all handler goroutines have exited.
-func (w *Worker[T]) Stop() {
+func (w *Worker[T]) Stop(context.Context) error {
 	if w.recorder != nil {
 		go w.recorder.LogStop(w)
 	}
 	w.dequeueCancel()
 	w.Wait()
+	return nil
 }
 
 // Wait blocks until all handler goroutines have exited.
@@ -314,20 +315,19 @@ func (w *Worker[T]) dequeueAndHandle() (dequeued bool, err error) {
 		// TODO tail-based sampling once its a thing, until then, we can configure on a per-job basis
 		policy.WithShouldTrace(w.rootCtx, w.options.Metrics.traceSampler(record)),
 		w.options.Name,
-		"",
 	)
 	handleCtx, cancel := context.WithCancel(workerCtxWithSpan)
 	processLog := trace.Logger(workerCtxWithSpan, w.options.Metrics.logger)
 
 	// Register the record as running so it is included in heartbeat updates.
 	if !w.runningIDSet.Add(record.RecordUID(), cancel) {
-		workerSpan.FinishWithErr(&ErrJobAlreadyExists)
+		workerSpan.EndWithErr(&ErrJobAlreadyExists)
 		return false, ErrJobAlreadyExists
 	}
 
 	// Set up observability
 	w.options.Metrics.numJobs.Inc()
-	processLog.Info("Dequeued record for processing", log.String("id", record.RecordUID()))
+	processLog.Debug("Dequeued record for processing", log.String("id", record.RecordUID()))
 	processArgs := observation.Args{
 		Attrs: []attribute.KeyValue{attribute.String("record.id", record.RecordUID())},
 	}
@@ -360,7 +360,7 @@ func (w *Worker[T]) dequeueAndHandle() (dequeued bool, err error) {
 			w.options.Metrics.numJobs.Dec()
 			w.handlerSemaphore <- struct{}{}
 			w.wg.Done()
-			workerSpan.Finish()
+			workerSpan.End()
 		}()
 
 		if err := w.handle(handleCtx, workerCtxWithSpan, record); err != nil {

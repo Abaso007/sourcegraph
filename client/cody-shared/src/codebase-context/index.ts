@@ -1,13 +1,29 @@
-import { Configuration } from '../configuration'
-import { EmbeddingsSearch } from '../embeddings'
-import { FilenameContextFetcher, KeywordContextFetcher, ContextResult } from '../local-context'
-import { isMarkdownFile, populateCodeContextTemplate, populateMarkdownContextTemplate } from '../prompt/templates'
-import { Message } from '../sourcegraph-api'
-import { EmbeddingsSearchResult } from '../sourcegraph-api/graphql/client'
-import { UnifiedContextFetcher } from '../unified-context'
+import type { Configuration } from '../configuration'
+import type { EmbeddingsSearch } from '../embeddings'
+import type { GraphContextFetcher } from '../graph-context'
+import type {
+    ContextResult,
+    FilenameContextFetcher,
+    IndexedKeywordContextFetcher,
+    KeywordContextFetcher,
+} from '../local-context'
+import {
+    isMarkdownFile,
+    populateCodeContextTemplate,
+    populateMarkdownContextTemplate,
+    populatePreciseCodeContextTemplate,
+} from '../prompt/templates'
+import type { Message } from '../sourcegraph-api'
+import type { EmbeddingsSearchResult } from '../sourcegraph-api/graphql/client'
+import type { UnifiedContextFetcher } from '../unified-context'
 import { isError } from '../utils'
 
-import { ContextMessage, ContextFile, getContextMessageWithResponse } from './messages'
+import {
+    type ContextFile,
+    type ContextFileSource,
+    type ContextMessage,
+    getContextMessageWithResponse,
+} from './messages'
 
 export interface ContextSearchOptions {
     numCodeResults: number
@@ -16,12 +32,15 @@ export interface ContextSearchOptions {
 
 export class CodebaseContext {
     private embeddingResultsError = ''
+
     constructor(
-        private config: Pick<Configuration, 'useContext' | 'serverEndpoint'>,
+        private config: Pick<Configuration, 'useContext' | 'serverEndpoint' | 'experimentalLocalSymbols'>,
         private codebase: string | undefined,
         private embeddings: EmbeddingsSearch | null,
         private keywords: KeywordContextFetcher | null,
         private filenames: FilenameContextFetcher | null,
+        private graph: GraphContextFetcher | null,
+        public symf?: IndexedKeywordContextFetcher,
         private unifiedContextFetcher?: UnifiedContextFetcher | null,
         private rerank?: (query: string, results: ContextResult[]) => Promise<ContextResult[]>
     ) {}
@@ -48,21 +67,37 @@ export class CodebaseContext {
     }
 
     /**
+     * Returns context messages from both generic contexts and graph-based contexts.
+     * The final list is a combination of these two sets of messages.
+     */
+    public async getCombinedContextMessages(query: string, options: ContextSearchOptions): Promise<ContextMessage[]> {
+        const contextMessages = this.getContextMessages(query, options)
+        const graphContextMessages = this.getGraphContextMessages()
+
+        // TODO(efritz) - open problem to figure out how to best rank these into a unified list
+        return [...(await contextMessages), ...(await graphContextMessages)]
+    }
+
+    /**
      * Returns list of context messages for a given query, sorted in *reverse* order of importance (that is,
      * the most important context message appears *last*)
      */
     public async getContextMessages(query: string, options: ContextSearchOptions): Promise<ContextMessage[]> {
         switch (this.config.useContext) {
-            case 'unified':
+            case 'unified': {
                 return this.getUnifiedContextMessages(query, options)
-            case 'keyword':
+            }
+            case 'keyword': {
                 return this.getLocalContextMessages(query, options)
-            case 'none':
+            }
+            case 'none': {
                 return []
-            default:
+            }
+            default: {
                 return this.embeddings
                     ? this.getEmbeddingsContextMessages(query, options)
                     : this.getLocalContextMessages(query, options)
+            }
         }
     }
 
@@ -103,6 +138,7 @@ export class CodebaseContext {
         return groupResultsByFile(combinedResults)
             .reverse() // Reverse results so that they appear in ascending order of importance (least -> most).
             .flatMap(groupedResults => this.makeContextMessageWithResponse(groupedResults))
+            .map(message => contextMessageWithSource(message, 'embeddings'))
     }
 
     private async getEmbeddingSearchResults(
@@ -120,6 +156,7 @@ export class CodebaseContext {
         )
 
         if (isError(embeddingsSearchResults)) {
+            // eslint-disable-next-line no-console
             console.error('Error retrieving embeddings:', embeddingsSearchResults)
             this.embeddingResultsError = `Error retrieving embeddings: ${embeddingsSearchResults}`
             return []
@@ -153,29 +190,45 @@ export class CodebaseContext {
         )
 
         if (isError(results)) {
+            // eslint-disable-next-line no-console
             console.error('Error retrieving context:', results)
             return []
         }
 
-        return results.flatMap(({ content, filePath, repoName, revision }) => {
-            const messageText = isMarkdownFile(filePath)
-                ? populateMarkdownContextTemplate(content, filePath, repoName)
-                : populateCodeContextTemplate(content, filePath, repoName)
+        return results.flatMap(result => {
+            if (result?.type === 'FileChunkContext') {
+                const { content, filePath, repoName, revision } = result
+                const messageText = isMarkdownFile(filePath)
+                    ? populateMarkdownContextTemplate(content, filePath, repoName)
+                    : populateCodeContextTemplate(content, filePath, repoName)
 
-            return getContextMessageWithResponse(messageText, { fileName: filePath, repoName, revision })
+                return getContextMessageWithResponse(messageText, { fileName: filePath, repoName, revision })
+            }
+
+            return []
         })
     }
 
     private async getLocalContextMessages(query: string, options: ContextSearchOptions): Promise<ContextMessage[]> {
-        const keywordResultsPromise = this.getKeywordSearchResults(query, options)
-        const filenameResultsPromise = this.getFilenameSearchResults(query, options)
+        try {
+            const keywordResultsPromise = this.getKeywordSearchResults(query, options)
+            const filenameResultsPromise = this.getFilenameSearchResults(query, options)
 
-        const [keywordResults, filenameResults] = await Promise.all([keywordResultsPromise, filenameResultsPromise])
+            const [keywordResults, filenameResults] = await Promise.all([keywordResultsPromise, filenameResultsPromise])
 
-        const combinedResults = this.mergeContextResults(keywordResults, filenameResults)
-        const rerankedResults = await (this.rerank ? this.rerank(query, combinedResults) : combinedResults)
-        const messages = resultsToMessages(rerankedResults)
-        return messages
+            const combinedResults = this.mergeContextResults(keywordResults, filenameResults)
+            const rerankedResults = await (this.rerank ? this.rerank(query, combinedResults) : combinedResults)
+            const messages = resultsToMessages(rerankedResults)
+
+            this.embeddingResultsError = ''
+
+            return messages
+        } catch (error) {
+            // eslint-disable-next-line no-console
+            console.error('Error retrieving local context:', error)
+            this.embeddingResultsError = `Error retrieving local context: ${error}`
+            return []
+        }
     }
 
     private async getKeywordSearchResults(query: string, options: ContextSearchOptions): Promise<ContextResult[]> {
@@ -192,6 +245,27 @@ export class CodebaseContext {
         }
         const results = await this.filenames.getContext(query, options.numCodeResults + options.numTextResults)
         return results
+    }
+
+    public async getGraphContextMessages(): Promise<ContextMessage[]> {
+        if (!this.config.experimentalLocalSymbols || !this.graph) {
+            return []
+        }
+        // eslint-disable-next-line no-console
+        console.debug('Fetching graph context')
+
+        const contextMessages: ContextMessage[] = []
+        for (const preciseContext of await this.graph.getContext()) {
+            const text = populatePreciseCodeContextTemplate(
+                preciseContext.symbol.fuzzyName || 'unknown',
+                preciseContext.filePath,
+                preciseContext.definitionSnippet
+            )
+
+            contextMessages.push({ speaker: 'human', preciseContext, text }, { speaker: 'assistant', text: 'okay' })
+        }
+
+        return contextMessages
     }
 }
 
@@ -228,7 +302,7 @@ function mergeConsecutiveResults(results: EmbeddingsSearchResult[]): string[] {
         const previousResult = sortedResults[i - 1]
 
         if (result.startLine === previousResult.endLine) {
-            mergedResults[mergedResults.length - 1] = mergedResults[mergedResults.length - 1] + result.content
+            mergedResults[mergedResults.length - 1] = mergedResults.at(-1)! + result.content
         } else {
             mergedResults.push(result.content)
         }
@@ -242,4 +316,11 @@ function resultsToMessages(results: ContextResult[]): ContextMessage[] {
         const messageText = populateCodeContextTemplate(content, fileName, repoName)
         return getContextMessageWithResponse(messageText, { fileName, repoName, revision })
     })
+}
+
+function contextMessageWithSource(message: ContextMessage, source: ContextFileSource): ContextMessage {
+    if (message.file) {
+        message.file.source = source
+    }
+    return message
 }

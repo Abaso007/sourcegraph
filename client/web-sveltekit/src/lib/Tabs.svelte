@@ -1,35 +1,50 @@
 <script lang="ts" context="module">
-    export interface Tab {
-        id: string
-        title: string
-    }
+    import type { Tab } from './TabsHeader.svelte'
+
+    export type { Tab }
 
     export interface TabsContext {
         id: string
-        selectedTab: Readable<string>
-        register(tab: Tab): void
+        selectedTabID: Readable<string | null>
+        register(tab: Tab): Unsubscriber
+        getTabs: () => Tab[]
+        selectTab: (selectedTabIndex: number) => void
     }
 
     export const KEY = {}
 </script>
 
 <script lang="ts">
-    import { setContext } from 'svelte'
-    import { derived, writable, type Readable, type Writable } from 'svelte/store'
+    import { createEventDispatcher, setContext } from 'svelte'
+    import { derived, writable, type Readable, type Writable, type Unsubscriber } from 'svelte/store'
     import * as uuid from 'uuid'
+
+    import TabsHeader from './TabsHeader.svelte'
 
     /**
      * The index of the tab that should be selected by default.
      */
-    export let initial: number = 0
+    export let selected: number | null = 0
+    export let toggable = false
+    /**
+     * Whether or not to show the tab header when there is only one tab.
+     */
+    export let showSingleTabHeader = false
 
+    const dispatch = createEventDispatcher<{ select: number | null }>()
     const id = uuid.v4()
     const tabs: Writable<Tab[]> = writable([])
-    const selectedTab = writable(initial)
+    const selectedTab = writable(selected)
+    $: $selectedTab = selected
 
     setContext<TabsContext>(KEY, {
         id,
-        selectedTab: derived([tabs, selectedTab], ([$tabs, $selectedTab]) => $tabs[$selectedTab]?.id ?? null),
+        selectedTabID: derived([tabs, selectedTab], ([$tabs, $selectedTab]) => {
+            if ($selectedTab === null) {
+                return null
+            }
+            return $tabs[$selectedTab]?.id ?? null
+        }),
         register(tab: Tab) {
             tabs.update(tabs => {
                 if (tabs.some(existingTab => existingTab.id === tab.id)) {
@@ -37,23 +52,32 @@
                 }
                 return [...tabs, tab]
             })
+            return () => {
+                tabs.update(tabs => tabs.filter(existingTab => existingTab.id !== tab.id))
+            }
+        },
+        getTabs: () => $tabs,
+        selectTab: (index: number): void => {
+            $selectedTab = $selectedTab === index && toggable ? null : index
+            dispatch('select', $selectedTab)
         },
     })
+
+    function selectTab(event: { detail: number }) {
+        $selectedTab = $selectedTab === event.detail && toggable ? null : event.detail
+        dispatch('select', $selectedTab)
+    }
 </script>
 
-<div class="tabs">
-    <div class="tabs-header" role="tablist">
-        {#each $tabs as tab, index (tab.id)}
-            <button
-                id="{id}--tab--{index}"
-                aria-controls={tab.id}
-                aria-selected={$selectedTab === index}
-                tabindex={$selectedTab === index ? 0 : -1}
-                role="tab"
-                on:click={() => ($selectedTab = index)}>{tab.title}</button
-            >
-        {/each}
-    </div>
+<div class="tabs" data-tabs>
+    {#if $tabs.length > 1 || showSingleTabHeader}
+        <header>
+            <TabsHeader {id} tabs={$tabs} selected={$selectedTab} on:select={selectTab} />
+            <div class="actions">
+                <slot name="header-actions" />
+            </div>
+        </header>
+    {/if}
     <slot />
 </div>
 
@@ -61,34 +85,21 @@
     .tabs {
         display: flex;
         flex-direction: column;
-        align-items: center;
-    }
+        height: 100%;
 
-    .tabs-header {
-        display: flex;
-        gap: 1rem;
-    }
+        --tabs-horizontal-spacing: 0.75rem;
 
-    button {
-        cursor: pointer;
-        border: none;
-        background: none;
-        align-items: center;
-        letter-spacing: normal;
-        margin: 0;
-        min-height: 2rem;
-        padding: 0 0.125rem;
-        color: var(--body-color);
-        text-transform: none;
-        display: inline-flex;
-        flex-direction: column;
-        justify-content: center;
-        border-bottom: 2px solid transparent;
+        header {
+            display: flex;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            gap: 2rem;
 
-        &[aria-selected='true'] {
-            color: var(--body-color);
-            font-weight: 700;
-            border-bottom: 2px solid var(--brand-secondary);
+            .actions {
+                margin-left: auto;
+                margin-right: var(--tabs-horizontal-spacing);
+                min-width: 0;
+            }
         }
     }
 </style>

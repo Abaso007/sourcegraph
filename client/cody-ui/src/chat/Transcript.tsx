@@ -2,20 +2,21 @@ import React, { useEffect, useRef } from 'react'
 
 import classNames from 'classnames'
 
-import { ChatMessage } from '@sourcegraph/cody-shared/src/chat/transcript/messages'
+import type { ChatMessage } from '@sourcegraph/cody-shared'
 
-import {
+import type {
+    ChatButtonProps,
+    ChatUISubmitButtonProps,
     ChatUITextAreaProps,
+    CopyButtonProps,
     EditButtonProps,
     FeedbackButtonsProps,
-    CopyButtonProps,
-    ChatUISubmitButtonProps,
 } from '../Chat'
 
-import { FileLinkProps } from './ContextFiles'
-import { TranscriptItem, TranscriptItemClassNames } from './TranscriptItem'
+import type { FileLinkProps } from './ContextFiles'
+import { TranscriptItem, type TranscriptItemClassNames } from './TranscriptItem'
 
-import styles from './Transcript.module.css'
+import styles from './Transcript.module.scss'
 
 export const Transcript: React.FunctionComponent<
     {
@@ -32,6 +33,9 @@ export const Transcript: React.FunctionComponent<
         feedbackButtonsOnSubmit?: (text: string) => void
         copyButtonOnSubmit?: CopyButtonProps['copyButtonOnSubmit']
         submitButtonComponent?: React.FunctionComponent<ChatUISubmitButtonProps>
+        ChatButtonComponent?: React.FunctionComponent<ChatButtonProps>
+        pluginsDevMode?: boolean
+        isTranscriptError?: boolean
     } & TranscriptItemClassNames
 > = React.memo(function TranscriptContent({
     transcript,
@@ -54,6 +58,9 @@ export const Transcript: React.FunctionComponent<
     copyButtonOnSubmit,
     submitButtonComponent,
     chatInputClassName,
+    ChatButtonComponent,
+    pluginsDevMode,
+    isTranscriptError,
 }) {
     const transcriptContainerRef = useRef<HTMLDivElement>(null)
     useEffect(() => {
@@ -65,7 +72,7 @@ export const Transcript: React.FunctionComponent<
             // We allow some small threshold for "what is considered not scrolled up" so that
             // minimal scroll doesn't affect it (ie. if I'm not all the way scrolled down by like a
             // pixel or two, I probably still want it to scroll).
-            const SCROLL_THRESHOLD = 100
+            const SCROLL_THRESHOLD = 50
             const delta = Math.abs(
                 transcriptContainerRef.current.scrollHeight -
                     transcriptContainerRef.current.offsetHeight -
@@ -80,7 +87,7 @@ export const Transcript: React.FunctionComponent<
     }, [transcript, transcriptContainerRef])
 
     // Scroll down whenever a new message is received.
-    const lastMessageSpeaker = transcript[transcript.length - 1]?.speaker
+    const lastMessageSpeaker = transcript.at(-1)?.speaker
     useEffect(() => {
         transcriptContainerRef.current?.scrollTo({
             top: transcriptContainerRef.current.scrollHeight,
@@ -113,9 +120,11 @@ export const Transcript: React.FunctionComponent<
                             FeedbackButtonsContainer={FeedbackButtonsContainer}
                             feedbackButtonsOnSubmit={feedbackButtonsOnSubmit}
                             copyButtonOnSubmit={copyButtonOnSubmit}
-                            showFeedbackButtons={index > 0 && transcript.length - index === 1}
+                            showFeedbackButtons={index !== 0 && !isTranscriptError}
                             submitButtonComponent={submitButtonComponent}
                             chatInputClassName={chatInputClassName}
+                            ChatButtonComponent={ChatButtonComponent}
+                            pluginsDevMode={pluginsDevMode}
                         />
                     )
             )}
@@ -136,6 +145,7 @@ export const Transcript: React.FunctionComponent<
                     copyButtonOnSubmit={copyButtonOnSubmit}
                     submitButtonComponent={submitButtonComponent}
                     chatInputClassName={chatInputClassName}
+                    ChatButtonComponent={ChatButtonComponent}
                 />
             )}
         </div>

@@ -6,8 +6,6 @@
 package confdefaults
 
 import (
-	"github.com/russellhaering/gosaml2/uuid"
-
 	"github.com/sourcegraph/sourcegraph/internal/conf/conftypes"
 )
 
@@ -45,9 +43,7 @@ var DockerContainer = conftypes.RawUnified{
 			"type": "builtin",
 			"allowSignup": true
 		}
-	],
-
-	"disablePublicRepoRedirects": true,
+	]
 }`,
 }
 
@@ -65,42 +61,13 @@ var KubernetesOrDockerComposeOrPureDocker = conftypes.RawUnified{
 	// The builtin auth provider with signup disallowed (shown below) means that
 	// after the initial site admin signs in, all other users must be invited.
 	//
-	// Other providers are documented at https://docs.sourcegraph.com/admin/auth.
+	// Other providers are documented at https://sourcegraph.com/docs/admin/auth.
 	"auth.providers": [
 		{
 			"type": "builtin",
 			"allowSignup": false
 		}
 	],
-}`,
-}
-
-// AppInMemoryExecutorPassword is an in-memory generated shared access token for communication
-// between the bundled executor and the publicly-facing executor API.
-var AppInMemoryExecutorPassword = uuid.NewV4().String()
-
-// App is the default configuration for the Sourcegraph app (which is also a single Go static binary.)
-var App = conftypes.RawUnified{
-	Site: `{
-	"auth.providers": [
-		{ "type": "builtin" }
-	],
-	"externalURL": "http://localhost:3080",
-	"codeIntelAutoIndexing.enabled": true,
-	"codeIntelAutoIndexing.allowGlobalPolicies": true,
-	"executors.frontendURL": "http://host.docker.internal:3080",
-	"experimentalFeatures": {		
-		"structuralSearch": "disabled"
-	},
-	"cody.enabled": true,
-	"completions": {
-		"enabled": true,
-		"provider": "sourcegraph"
-	},
-	"embeddings": {
-		"enabled": true,
-		"provider": "sourcegraph"		
-	}
 }`,
 }
 

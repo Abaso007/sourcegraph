@@ -1,13 +1,14 @@
-import { FC, useState } from 'react'
+import { type FC, useState, useEffect } from 'react'
 
 import { noop } from 'rxjs'
 
 import { Toggle } from '@sourcegraph/branded/src/components/Toggle'
 import { useMutation, useQuery } from '@sourcegraph/http-client'
+import type { TelemetryV2Props } from '@sourcegraph/shared/src/telemetry'
 import { Container, PageHeader, H3, Text, Label, Button, LoadingSpinner, ErrorAlert } from '@sourcegraph/wildcard'
 
 import { PageTitle } from '../../../components/PageTitle'
-import {
+import type {
     GetOwnSignalConfigurationsResult,
     OwnSignalConfig,
     UpdateSignalConfigsResult,
@@ -19,10 +20,16 @@ import { GET_OWN_JOB_CONFIGURATIONS, UPDATE_SIGNAL_CONFIGURATIONS } from './quer
 
 import styles from './own-status-page-styles.module.scss'
 
-export const OwnStatusPage: FC = () => {
+interface OwnStatusPageProps extends TelemetryV2Props {}
+
+export const OwnStatusPage: FC<OwnStatusPageProps> = ({ telemetryRecorder }) => {
     const [hasLocalChanges, setHasLocalChanges] = useState<boolean>(false)
     const [localData, setLocalData] = useState<OwnSignalConfig[]>([])
     const [saveError, setSaveError] = useState<Error | null>()
+
+    useEffect(() => {
+        telemetryRecorder.recordEvent('admin.ownershipSignals', 'view')
+    }, [telemetryRecorder])
 
     const { loading, error } = useQuery<GetOwnSignalConfigurationsResult>(GET_OWN_JOB_CONFIGURATIONS, {
         onCompleted: data => {
@@ -50,11 +57,11 @@ export const OwnStatusPage: FC = () => {
         <div>
             <span className={styles.topHeader}>
                 <div>
-                    <PageTitle title="Own Signals Configuration" />
+                    <PageTitle title="Code ownership signals configuration" />
                     <PageHeader
                         headingElement="h2"
-                        path={[{ text: 'Own Signals Configuration' }]}
-                        description="List of Own inference signal indexers and their configurations. All repositories are included by default."
+                        path={[{ text: 'Code ownership signals configuration' }]}
+                        description="List of code ownership inference signal indexers and their configurations. All repositories are included by default."
                         className="mb-3"
                     />
                     {saveError && <ErrorAlert error={saveError} />}
@@ -68,6 +75,7 @@ export const OwnStatusPage: FC = () => {
                         aria-label="Save changes"
                         variant="primary"
                         onClick={() => {
+                            telemetryRecorder.recordEvent('admin.ownershipSignals', 'save')
                             setSaveError(null)
                             // do network stuff
                             saveConfigs({
@@ -82,7 +90,7 @@ export const OwnStatusPage: FC = () => {
                                 },
                             })
                                 .then(result => {
-                                    if (result.errors || !result.data || !result.data.updateOwnSignalConfigurations) {
+                                    if (result.errors || !result.data?.updateOwnSignalConfigurations) {
                                         setSaveError(new Error('Failed to save configurations'))
                                     } else {
                                         setHasLocalChanges(false)
@@ -100,7 +108,7 @@ export const OwnStatusPage: FC = () => {
 
             <Container className={styles.root}>
                 {loading && <LoadingSpinner />}
-                {error && <ErrorAlert prefix="Error fetching Own signal configurations" error={error} />}
+                {error && <ErrorAlert prefix="Error fetching code ownership signal configurations" error={error} />}
                 {!loading &&
                     localData &&
                     !error &&
@@ -112,6 +120,7 @@ export const OwnStatusPage: FC = () => {
                                     <Toggle
                                         onToggle={value => {
                                             onUpdateJob(index, { ...job, isEnabled: value })
+                                            telemetryRecorder.recordEvent('admin.ownershipSignals.job', 'toggle')
                                         }}
                                         title={job.isEnabled ? 'Enabled' : 'Disabled'}
                                         id="job-enabled"

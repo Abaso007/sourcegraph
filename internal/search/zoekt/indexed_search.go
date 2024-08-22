@@ -14,7 +14,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.uber.org/atomic"
 
-	"github.com/sourcegraph/sourcegraph/cmd/frontend/envvar"
 	"github.com/sourcegraph/sourcegraph/internal/actor"
 	"github.com/sourcegraph/sourcegraph/internal/api"
 	"github.com/sourcegraph/sourcegraph/internal/conf"
@@ -29,7 +28,6 @@ import (
 	"github.com/sourcegraph/sourcegraph/internal/search/streaming"
 	"github.com/sourcegraph/sourcegraph/internal/trace"
 	"github.com/sourcegraph/sourcegraph/internal/types"
-	"github.com/sourcegraph/sourcegraph/internal/xcontext"
 	"github.com/sourcegraph/sourcegraph/lib/errors"
 )
 
@@ -80,7 +78,7 @@ func (rb *IndexedRepoRevs) GetRepoRevsFromBranchRepos() map[api.RepoID]*search.R
 // add will add reporev and repo to the list of repository and branches to
 // search if reporev's refs are a subset of repo's branches. It will return
 // the revision specifiers it can't add.
-func (rb *IndexedRepoRevs) add(reporev *search.RepositoryRevisions, repo *zoekt.MinimalRepoListEntry) []string {
+func (rb *IndexedRepoRevs) add(reporev *search.RepositoryRevisions, repo zoekt.MinimalRepoListEntry) []string {
 	// A repo should only appear once in revs. However, in case this
 	// invariant is broken we will treat later revs as if it isn't
 	// indexed.
@@ -224,13 +222,13 @@ func PartitionRepos(
 		return &IndexedRepoRevs{}, repos, nil
 	}
 
-	tr, ctx := trace.New(ctx, "PartitionRepos", string(typ))
-	defer tr.FinishWithErr(&err)
+	tr, ctx := trace.New(ctx, "PartitionRepos", attribute.String("type", string(typ)))
+	defer tr.EndWithErr(&err)
 
 	// Only include indexes with symbol information if a symbol request.
-	var filterFunc func(repo *zoekt.MinimalRepoListEntry) bool
+	var filterFunc func(repo zoekt.MinimalRepoListEntry) bool
 	if typ == search.SymbolRequest {
-		filterFunc = func(repo *zoekt.MinimalRepoListEntry) bool {
+		filterFunc = func(repo zoekt.MinimalRepoListEntry) bool {
 			return repo.HasSymbols
 		}
 	}
@@ -238,7 +236,7 @@ func PartitionRepos(
 	// Consult Zoekt to find out which repository revisions can be searched.
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
-	list, err := zoektStreamer.List(ctx, &zoektquery.Const{Value: true}, &zoekt.ListOptions{Minimal: true})
+	list, err := zoektStreamer.List(ctx, &zoektquery.Const{Value: true}, &zoekt.ListOptions{Field: zoekt.RepoListFieldReposMap})
 	if err != nil {
 		if ctx.Err() == nil {
 			// Only hard fail if the user specified index:only
@@ -255,10 +253,10 @@ func PartitionRepos(
 	// Note: We do not need to handle list.Crashes since we will fallback to
 	// unindexed search for any repository unavailable due to rollout.
 
-	tr.SetAttributes(attribute.Int("all_indexed_set.size", len(list.Minimal))) //nolint:staticcheck // See https://github.com/sourcegraph/sourcegraph/issues/45814
+	tr.SetAttributes(attribute.Int("all_indexed_set.size", len(list.ReposMap)))
 
 	// Split based on indexed vs unindexed
-	indexed, unindexed = zoektIndexedRepos(list.Minimal, repos, filterFunc) //nolint:staticcheck // See https://github.com/sourcegraph/sourcegraph/issues/45814
+	indexed, unindexed = zoektIndexedRepos(list.ReposMap, repos, filterFunc)
 
 	tr.SetAttributes(
 		attribute.Int("indexed.size", len(indexed.RepoRevs)),
@@ -352,7 +350,7 @@ func zoektSearch(ctx context.Context, repos *IndexedRepoRevs, q zoektquery.Q, pa
 	}
 
 	if !foundResults.Load() && since(t0) >= searchOpts.MaxWallTime {
-		c.Send(streaming.SearchEvent{Stats: streaming.Stats{Status: mkStatusMap(search.RepoStatusTimedout)}})
+		c.Send(streaming.SearchEvent{Stats: streaming.Stats{Status: mkStatusMap(search.RepoStatusTimedOut)}})
 	}
 	return nil
 }
@@ -417,10 +415,11 @@ func sendMatches(event *zoekt.SearchResult, pathRegexps []*regexp.Regexp, getRep
 				Symbols:      symbols,
 				PathMatches:  pathMatches,
 				File: result.File{
-					InputRev: &inputRev,
-					CommitID: api.CommitID(file.Version),
-					Repo:     repo,
-					Path:     file.FileName,
+					InputRev:        &inputRev,
+					CommitID:        api.CommitID(file.Version),
+					Repo:            repo,
+					Path:            file.FileName,
+					PreciseLanguage: file.Language,
 				},
 			}
 			if debug := file.Debug; debug != "" {
@@ -438,42 +437,6 @@ func sendMatches(event *zoekt.SearchResult, pathRegexps []*regexp.Regexp, getRep
 
 func zoektFileMatchToMultilineMatches(file *zoekt.FileMatch) result.ChunkMatches {
 	cms := make(result.ChunkMatches, 0, len(file.ChunkMatches))
-	for _, l := range file.LineMatches {
-		if l.FileName {
-			continue
-		}
-
-		ranges := make(result.Ranges, 0, len(l.LineFragments))
-		for _, m := range l.LineFragments {
-			offset := utf8.RuneCount(l.Line[:m.LineOffset])
-			length := utf8.RuneCount(l.Line[m.LineOffset : m.LineOffset+m.MatchLength])
-
-			ranges = append(ranges, result.Range{
-				Start: result.Location{
-					Offset: int(m.Offset),
-					Line:   l.LineNumber - 1,
-					Column: offset,
-				},
-				End: result.Location{
-					Offset: int(m.Offset) + m.MatchLength,
-					Line:   l.LineNumber - 1,
-					Column: offset + length,
-				},
-			})
-		}
-
-		cms = append(cms, result.ChunkMatch{
-			Content: string(l.Line),
-			// zoekt line numbers are 1-based rather than 0-based so subtract 1
-			ContentStart: result.Location{
-				Offset: l.LineStart,
-				Line:   l.LineNumber - 1,
-				Column: 0,
-			},
-			Ranges: ranges,
-		})
-	}
-
 	for _, cm := range file.ChunkMatches {
 		if cm.FileName {
 			continue
@@ -533,38 +496,14 @@ func zoektFileMatchToPathMatchRanges(file *zoekt.FileMatch, pathRegexps []*regex
 
 func zoektFileMatchToSymbolResults(repoName types.MinimalRepo, inputRev string, file *zoekt.FileMatch) []*result.SymbolMatch {
 	newFile := &result.File{
-		Path:     file.FileName,
-		Repo:     repoName,
-		CommitID: api.CommitID(file.Version),
-		InputRev: &inputRev,
+		Path:            file.FileName,
+		Repo:            repoName,
+		CommitID:        api.CommitID(file.Version),
+		InputRev:        &inputRev,
+		PreciseLanguage: file.Language,
 	}
 
 	symbols := make([]*result.SymbolMatch, 0, len(file.ChunkMatches))
-	for _, l := range file.LineMatches {
-		if l.FileName {
-			continue
-		}
-
-		for _, m := range l.LineFragments {
-			if m.SymbolInfo == nil {
-				continue
-			}
-
-			symbols = append(symbols, result.NewSymbolMatch(
-				newFile,
-				l.LineNumber,
-				-1, // -1 means infer the column
-				m.SymbolInfo.Sym,
-				m.SymbolInfo.Kind,
-				m.SymbolInfo.Parent,
-				m.SymbolInfo.ParentKind,
-				file.Language,
-				string(l.Line),
-				false,
-			))
-		}
-	}
-
 	for _, cm := range file.ChunkMatches {
 		if cm.FileName || len(cm.SymbolInfo) == 0 {
 			continue
@@ -591,13 +530,16 @@ func zoektFileMatchToSymbolResults(repoName types.MinimalRepo, inputRev string, 
 		}
 	}
 
-	return symbols
+	// We deduplicate symbol matches. For example searching for "foo AND bar"
+	// will return the symbol "foobar" twice. However, sourcegraph's result
+	// type for symbol is modeled as a result per symbol.
+	return result.DedupSymbols(symbols)
 }
 
 // contextWithoutDeadline returns a context which will cancel if the cOld is
 // canceled.
 func contextWithoutDeadline(cOld context.Context) (context.Context, context.CancelFunc) {
-	cNew := xcontext.Detach(cOld)
+	cNew := context.WithoutCancel(cOld)
 	cNew, cancel := context.WithCancel(cNew)
 
 	go func() {
@@ -617,7 +559,7 @@ func contextWithoutDeadline(cOld context.Context) (context.Context, context.Canc
 // zoektIndexedRepos splits the revs into two parts: (1) the repository
 // revisions in indexedSet (indexed) and (2) the repositories that are
 // unindexed.
-func zoektIndexedRepos(indexedSet map[uint32]*zoekt.MinimalRepoListEntry, revs []*search.RepositoryRevisions, filter func(repo *zoekt.MinimalRepoListEntry) bool) (indexed *IndexedRepoRevs, unindexed []*search.RepositoryRevisions) {
+func zoektIndexedRepos(indexedSet zoekt.ReposMap, revs []*search.RepositoryRevisions, filter func(repo zoekt.MinimalRepoListEntry) bool) (indexed *IndexedRepoRevs, unindexed []*search.RepositoryRevisions) {
 	// PERF: If len(revs) is large, we expect to be doing an indexed
 	// search. So set indexed to the max size it can be to avoid growing.
 	indexed = &IndexedRepoRevs{
@@ -751,29 +693,16 @@ func (t *GlobalTextSearchJob) Attributes(v job.Verbosity) (res []attribute.KeyVa
 func (t *GlobalTextSearchJob) Children() []job.Describer       { return nil }
 func (t *GlobalTextSearchJob) MapChildren(job.MapFunc) job.Job { return t }
 
-// Get all private repos for the the current actor. On sourcegraph.com, those are
-// only the repos directly added by the user. Otherwise it's all repos the user has
-// access to on all connected code hosts / external services.
+// Get all private repos for the the current actor.
 func privateReposForActor(ctx context.Context, logger log.Logger, db database.DB, repoOptions search.RepoOptions) []types.MinimalRepo {
-	tr, ctx := trace.New(ctx, "privateReposForActor", "")
-	defer tr.Finish()
+	tr, ctx := trace.New(ctx, "privateReposForActor")
+	defer tr.End()
 
-	userID := int32(0)
-	if envvar.SourcegraphDotComMode() {
-		if a := actor.FromContext(ctx); a.IsAuthenticated() {
-			userID = a.UID
-		} else {
-			tr.LazyPrintf("skipping private repo resolution for unauthed user")
-			return nil
-		}
-	}
-	tr.SetAttributes(attribute.Int64("userID", int64(userID)))
-
-	// TODO: We should use repos.Resolve here. However, the logic for
-	// UserID is different to repos.Resolve, so we need to work out how
-	// best to address that first.
+	// TODO: We should use repos.Resolve here. However, this logic was added
+	// when we used UserID on sourcegraph.com and it was handled differently
+	// in repos.Resolve. We need to confirm and test the change to
+	// repos.Resolve.
 	userPrivateRepos, err := db.Repos().ListMinimalRepos(ctx, database.ReposListOptions{
-		UserID:         userID, // Zero valued when not in sourcegraph.com mode
 		OnlyPrivate:    true,
 		LimitOffset:    &database.LimitOffset{Limit: limits.SearchLimits(conf.Get()).MaxRepos + 1},
 		OnlyForks:      repoOptions.OnlyForks,
@@ -784,8 +713,12 @@ func privateReposForActor(ctx context.Context, logger log.Logger, db database.DB
 	})
 
 	if err != nil {
+		var userID int32
+		if a := actor.FromContext(ctx); a != nil {
+			userID = a.UID
+		}
 		logger.Error("doResults: failed to list user private repos", log.Error(err), log.Int32("user-id", userID))
-		tr.LazyPrintf("error resolving user private repos: %v", err)
+		tr.AddEvent("error resolving user private repos", trace.Error(err))
 	}
 	return userPrivateRepos
 }

@@ -8,19 +8,23 @@ import (
 	"github.com/derision-test/glock"
 	"github.com/sourcegraph/conc"
 	"github.com/sourcegraph/log"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/sourcegraph/sourcegraph/internal/goroutine/recorder"
+	"github.com/sourcegraph/sourcegraph/internal/metrics"
 	"github.com/sourcegraph/sourcegraph/internal/observation"
 	"github.com/sourcegraph/sourcegraph/lib/errors"
 )
 
-type getIntervalFunc func() time.Duration
-type getConcurrencyFunc func() int
+type (
+	getIntervalFunc    func() time.Duration
+	getConcurrencyFunc func() int
+)
 
 // PeriodicGoroutine represents a goroutine whose main behavior is reinvoked periodically.
 //
 // See
-// https://docs.sourcegraph.com/dev/background-information/backgroundroutine
+// https://docs-legacy.sourcegraph.com/dev/background-information/backgroundroutine
 // for more information and a step-by-step guide on how to implement a
 // PeriodicBackgroundRoutine.
 type PeriodicGoroutine struct {
@@ -31,7 +35,7 @@ type PeriodicGoroutine struct {
 	getInterval       getIntervalFunc
 	initialDelay      time.Duration
 	getConcurrency    getConcurrencyFunc
-	handler           unifiedHandler
+	handler           Handler
 	operation         *observation.Operation
 	clock             glock.Clock
 	concurrencyClock  glock.Clock
@@ -44,12 +48,8 @@ type PeriodicGoroutine struct {
 
 var _ recorder.Recordable = &PeriodicGoroutine{}
 
-type unifiedHandler interface {
-	Handler
-	ErrorHandler
-}
-
-// Handler represents the main behavior of a PeriodicGoroutine.
+// Handler represents the main behavior of a PeriodicGoroutine. Additional
+// interfaces like ErrorHandler can also be implemented.
 type Handler interface {
 	// Handle performs an action with the given context.
 	Handle(ctx context.Context) error
@@ -74,31 +74,6 @@ type HandlerFunc func(ctx context.Context) error
 
 func (f HandlerFunc) Handle(ctx context.Context) error {
 	return f(ctx)
-}
-
-type simpleHandler struct {
-	name  string
-	scope log.Logger
-	Handler
-}
-
-var (
-	_ unifiedHandler = (*simpleHandler)(nil)
-	_ Finalizer      = (*simpleHandler)(nil)
-)
-
-func (h *simpleHandler) Handle(ctx context.Context) error {
-	return h.Handler.Handle(ctx)
-}
-
-func (h *simpleHandler) HandleError(err error) {
-	h.scope.Error("An error occurred in a background task", log.String("handler", h.name), log.Error(err))
-}
-
-func (h *simpleHandler) OnShutdown() {
-	if finalizer, ok := h.Handler.(Finalizer); ok {
-		finalizer.OnShutdown()
-	}
 }
 
 type Option func(*PeriodicGoroutine)
@@ -136,14 +111,6 @@ func WithInitialDelay(delay time.Duration) Option {
 	return func(p *PeriodicGoroutine) { p.initialDelay = delay }
 }
 
-func withClock(clock glock.Clock) Option {
-	return func(p *PeriodicGoroutine) { p.clock = clock }
-}
-
-func withConcurrencyClock(clock glock.Clock) Option {
-	return func(p *PeriodicGoroutine) { p.concurrencyClock = clock }
-}
-
 // NewPeriodicGoroutine creates a new PeriodicGoroutine with the given handler. The context provided will propagate into
 // the executing goroutine and will terminate the goroutine if cancelled.
 func NewPeriodicGoroutine(ctx context.Context, handler Handler, options ...Option) *PeriodicGoroutine {
@@ -156,7 +123,21 @@ func NewPeriodicGoroutine(ctx context.Context, handler Handler, options ...Optio
 	r.ctx = ctx
 	r.cancel = cancel
 	r.finished = make(chan struct{})
-	r.handler = wrapHandler(handler, r.name, r.description)
+	r.handler = handler
+
+	// If no operation is provided, create a default one that only handles logging.
+	// We disable tracing and metrics by default - if any of these should be
+	// enabled, caller should use goroutine.WithOperation
+	if r.operation == nil {
+		r.operation = observation.NewContext(
+			log.Scoped("periodic"),
+			observation.Tracer(noop.NewTracerProvider().Tracer("noop")),
+			observation.Metrics(metrics.NoOpRegisterer),
+		).Operation(observation.Op{
+			Name:        r.name,
+			Description: r.description,
+		})
+	}
 
 	return r
 }
@@ -170,18 +151,6 @@ func newDefaultPeriodicRoutine() *PeriodicGoroutine {
 		operation:        nil,
 		clock:            glock.NewRealClock(),
 		concurrencyClock: glock.NewRealClock(),
-	}
-}
-
-func wrapHandler(handler Handler, name, description string) unifiedHandler {
-	if uh, ok := handler.(unifiedHandler); ok {
-		return uh
-	}
-
-	return &simpleHandler{
-		name:    name,
-		scope:   log.Scoped(name, description),
-		Handler: handler,
 	}
 }
 
@@ -212,12 +181,13 @@ func (r *PeriodicGoroutine) Start() {
 // Stop will cancel the context passed to the handler function to stop the current
 // iteration of work, then break the loop in the Start method so that no new work
 // is accepted. This method blocks until Start has returned.
-func (r *PeriodicGoroutine) Stop() {
+func (r *PeriodicGoroutine) Stop(context.Context) error {
 	if r.recorder != nil {
 		go r.recorder.LogStop(r)
 	}
 	r.cancel()
 	<-r.finished
+	return nil
 }
 
 func (r *PeriodicGoroutine) runHandlerPool() {
@@ -272,7 +242,7 @@ func (r *PeriodicGoroutine) startPool(concurrency int) func() {
 	g := conc.NewWaitGroup()
 	ctx, cancel := context.WithCancel(context.Background())
 
-	for i := 0; i < concurrency; i++ {
+	for range concurrency {
 		g.Go(func() { r.runHandlerPeriodically(ctx) })
 	}
 
@@ -290,10 +260,7 @@ func (r *PeriodicGoroutine) runHandlerPeriodically(monitorCtx context.Context) {
 	handlerCtx, cancel := context.WithCancel(r.ctx)
 	defer cancel()
 
-	go func() {
-		<-monitorCtx.Done()
-		cancel()
-	}()
+	context.AfterFunc(monitorCtx, cancel)
 
 	select {
 	// Initial delay sleep - might be a zero-duration value if it wasn't set,
@@ -399,11 +366,11 @@ func (r *PeriodicGoroutine) withOperation(ctx context.Context, f func(ctx contex
 
 func (r *PeriodicGoroutine) withRecorder(ctx context.Context, f func(ctx context.Context) error) error {
 	if r.recorder == nil {
-		return f(ctx)
+		return runAndConvertPanicToError(ctx, f)
 	}
 
 	start := time.Now()
-	err := f(ctx)
+	err := runAndConvertPanicToError(ctx, f)
 	duration := time.Since(start)
 
 	go func() {
@@ -412,6 +379,21 @@ func (r *PeriodicGoroutine) withRecorder(ctx context.Context, f func(ctx context
 	}()
 
 	return err
+}
+
+// runAndConvertPanicToError invokes f with the given ctx and recovers any panics
+// by turning them into an error instead.
+func runAndConvertPanicToError(ctx context.Context, f func(ctx context.Context) error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if e, ok := r.(error); ok {
+				err = errors.Wrap(e, "panic occurred")
+			} else {
+				err = errors.Newf("panic occurred: %v", r)
+			}
+		}
+	}()
+	return f(ctx)
 }
 
 func typeFromOperations(operation *observation.Operation) recorder.RoutineType {

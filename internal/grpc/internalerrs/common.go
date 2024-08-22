@@ -18,34 +18,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// callBackClientStream is a grpc.ClientStream that calls a function after SendMsg and RecvMsg.
-type callBackClientStream struct {
-	grpc.ClientStream
-
-	postMessageSend    func(message any, err error)
-	postMessageReceive func(message any, err error)
-}
-
-func (c *callBackClientStream) SendMsg(m any) error {
-	err := c.ClientStream.SendMsg(m)
-	if c.postMessageSend != nil {
-		c.postMessageSend(m, err)
-	}
-
-	return err
-}
-
-func (c *callBackClientStream) RecvMsg(m any) error {
-	err := c.ClientStream.RecvMsg(m)
-	if c.postMessageReceive != nil {
-		c.postMessageReceive(m, err)
-	}
-
-	return err
-}
-
-var _ grpc.ClientStream = &callBackClientStream{}
-
 // requestSavingClientStream is a grpc.ClientStream that saves the initial request sent to the server.
 type requestSavingClientStream struct {
 	grpc.ClientStream
@@ -162,6 +134,7 @@ type internalGRPCErrorChecker func(*status.Status) bool
 var allCheckers = []internalGRPCErrorChecker{
 	gRPCPrefixChecker,
 	gRPCResourceExhaustedChecker,
+	gRPCUnexpectedContentTypeChecker,
 }
 
 // gRPCPrefixChecker checks if a gRPC status likely represents an error that comes from the go-grpc library, by checking if the error message
@@ -177,15 +150,11 @@ func gRPCResourceExhaustedChecker(s *status.Status) bool {
 	return s.Code() == codes.ResourceExhausted && strings.HasPrefix(s.Message(), "trying to send message larger than max (")
 }
 
-// splitMethodName splits a full gRPC method name in to its components (service, method)
-//
-// Copied from github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/reporter.go
-func splitMethodName(fullMethod string) (string, string) {
-	fullMethod = strings.TrimPrefix(fullMethod, "/") // remove leading slash
-	if i := strings.Index(fullMethod, "/"); i >= 0 {
-		return fullMethod[:i], fullMethod[i+1:]
-	}
-	return "unknown", "unknown"
+// gRPCUnexpectedContentTypeChecker checks if a gRPC status likely represents an error that comes from the go-grpc library, by checking if the error message
+// is prefixed with "transport: received unexpected content-type".
+func gRPCUnexpectedContentTypeChecker(s *status.Status) bool {
+	// Observed from https://github.com/grpc/grpc-go/blob/2997e84fd8d18ddb000ac6736129b48b3c9773ec/internal/transport/http2_client.go#L1415-L1417
+	return s.Code() != codes.OK && strings.Contains(s.Message(), "transport: received unexpected content-type")
 }
 
 // findNonUTF8StringFields returns a list of field names that contain invalid UTF-8 strings

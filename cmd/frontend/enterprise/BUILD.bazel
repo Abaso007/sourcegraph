@@ -6,14 +6,12 @@ go_library(
     importpath = "github.com/sourcegraph/sourcegraph/cmd/frontend/enterprise",
     visibility = ["//visibility:public"],
     deps = [
-        "//cmd/frontend/envvar",
         "//cmd/frontend/graphqlbackend",
-        "//cmd/frontend/webhooks",
+        "//cmd/frontend/internal/webhooks",
         "//internal/api",
         "//internal/auth",
         "//internal/codeintel/types",
         "//internal/conf",
         "//internal/database",
-        "//internal/search/job/jobutil",
     ],
 )

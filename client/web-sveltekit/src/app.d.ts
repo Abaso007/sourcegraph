@@ -2,12 +2,14 @@
 // for information about these interfaces
 /// <reference types="@sveltejs/kit" />
 
-import type { ErrorLike } from '$lib/common'
-import type { ResolvedRevision, Repo } from '$lib/web'
+import 'unplugin-icons/types/svelte'
 
-// and what to do when importing types
-declare namespace App {
-    interface PageData {
-        resolvedRevision?: (ResolvedRevision & Repo) | ErrorLike
+declare global {
+    namespace App {
+        interface PageData {
+            // Used by the repository pages to control the history panel
+            enableInlineDiff?: boolean
+            enableViewAtCommit?: boolean
+        }
     }
 }

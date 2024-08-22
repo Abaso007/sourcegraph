@@ -1,6 +1,7 @@
-import { ConfigurationWithAccessToken } from '../../configuration'
+import type { ConfigurationWithAccessToken } from '../../configuration'
+import type { FeatureFlagProvider } from '../../experimentation/FeatureFlagProvider'
 
-import { Event, CompletionCallbacks, CompletionParameters, CompletionResponse } from './types'
+import type { CompletionCallbacks, CompletionParameters, CompletionResponse, Event } from './types'
 
 export interface CompletionLogger {
     startCompletion(params: CompletionParameters | {}):
@@ -17,42 +18,79 @@ export type CompletionsClientConfig = Pick<
     'serverEndpoint' | 'accessToken' | 'debugEnable' | 'customHeaders'
 >
 
+/**
+ * Access the chat based LLM APIs via a Sourcegraph server instance.
+ */
 export abstract class SourcegraphCompletionsClient {
     private errorEncountered = false
 
-    constructor(protected config: CompletionsClientConfig, protected logger?: CompletionLogger) {}
+    constructor(
+        protected config: CompletionsClientConfig,
+        protected featureFlagProvider?: FeatureFlagProvider,
+        protected logger?: CompletionLogger
+    ) {}
 
     public onConfigurationChange(newConfig: CompletionsClientConfig): void {
         this.config = newConfig
     }
 
     protected get completionsEndpoint(): string {
-        return new URL('/.api/completions/stream', this.config.serverEndpoint).href
-    }
+        const url = new URL('/.api/completions/stream', this.config.serverEndpoint)
 
-    protected get codeCompletionsEndpoint(): string {
-        return new URL('/.api/completions/code', this.config.serverEndpoint).href
+        // Sourcegraph >=5.4 instances require client name and version params on the completions endpoint to ensure client supports Cody Ignore functionality.
+        // Ensure client name is always set to "web" for Cody Web. Client version is not required for Cody Web as it aligns with server version.
+        // See https://github.com/sourcegraph/sourcegraph/pull/62048.
+        url.searchParams.set('client-name', 'web')
+
+        return url.href
     }
 
     protected sendEvents(events: Event[], cb: CompletionCallbacks): void {
         for (const event of events) {
             switch (event.type) {
-                case 'completion':
+                case 'completion': {
                     cb.onChange(event.completion)
                     break
-                case 'error':
+                }
+                case 'error': {
                     this.errorEncountered = true
                     cb.onError(event.error)
                     break
-                case 'done':
+                }
+                case 'done': {
                     if (!this.errorEncountered) {
                         cb.onComplete()
                     }
                     break
+                }
             }
         }
     }
 
     public abstract stream(params: CompletionParameters, cb: CompletionCallbacks): () => void
-    public abstract complete(params: CompletionParameters, abortSignal: AbortSignal): Promise<CompletionResponse>
+}
+
+/**
+ * A helper function that calls the streaming API but will buffer the result
+ * until the stream has completed.
+ */
+export function bufferStream(
+    client: Pick<SourcegraphCompletionsClient, 'stream'>,
+    params: CompletionParameters
+): Promise<string> {
+    return new Promise((resolve, reject) => {
+        let buffer = ''
+        const callbacks: CompletionCallbacks = {
+            onChange(text: string) {
+                buffer = text
+            },
+            onComplete() {
+                resolve(buffer)
+            },
+            onError(message: string, code?: number) {
+                reject(new Error(code ? `${message} (code ${code})` : message))
+            },
+        }
+        client.stream(params, callbacks)
+    })
 }

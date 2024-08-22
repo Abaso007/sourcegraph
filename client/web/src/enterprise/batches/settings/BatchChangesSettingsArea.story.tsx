@@ -1,14 +1,15 @@
-import { DecoratorFn, Meta, Story } from '@storybook/react'
+import type { Decorator, Meta, StoryFn } from '@storybook/react'
 
 import { getDocumentNode } from '@sourcegraph/http-client'
 import { MockedTestProvider } from '@sourcegraph/shared/src/testing/apollo'
 
 import { WebStory } from '../../../components/WebStory'
 import {
-    BatchChangesCodeHostFields,
-    BatchChangesCredentialFields,
+    type BatchChangesCodeHostFields,
+    type BatchChangesCredentialFields,
     ExternalServiceKind,
-    UserBatchChangesCodeHostsResult,
+    type UserBatchChangesCodeHostsResult,
+    type UserAreaUserFields,
 } from '../../../graphql-operations'
 import { BATCH_CHANGES_SITE_CONFIGURATION } from '../backend'
 import { noRolloutWindowMockResult, rolloutWindowConfigMockResult } from '../mocks'
@@ -16,7 +17,7 @@ import { noRolloutWindowMockResult, rolloutWindowConfigMockResult } from '../moc
 import { USER_CODE_HOSTS } from './backend'
 import { BatchChangesSettingsArea } from './BatchChangesSettingsArea'
 
-const decorator: DecoratorFn = story => <div className="p-3 container">{story()}</div>
+const decorator: Decorator = story => <div className="p-3 container">{story()}</div>
 
 const config: Meta = {
     title: 'web/batches/settings/BatchChangesSettingsArea',
@@ -29,8 +30,13 @@ const codeHostsResult = (...hosts: BatchChangesCodeHostFields[]): UserBatchChang
     node: {
         __typename: 'User',
         batchChangesCodeHosts: {
+            __typename: 'BatchChangesCodeHostConnection',
             totalCount: hosts.length,
-            pageInfo: { endCursor: null, hasNextPage: false },
+            pageInfo: {
+                endCursor: null,
+                hasNextPage: false,
+                __typename: 'PageInfo',
+            },
             nodes: hosts,
         },
     },
@@ -41,9 +47,10 @@ const sshCredential = (isSiteCredential: boolean): BatchChangesCredentialFields 
     isSiteCredential,
     sshPublicKey:
         'rsa-ssh randorandorandorandorandorandorandorandorandorandorandorandorandorandorandorandorandorandorandorandorandorandorandorandorandorandorandorandorandorandorandorandorandorando',
+    gitHubApp: null,
 })
 
-export const Overview: Story = () => (
+export const Overview: StoryFn = () => (
     <WebStory>
         {props => (
             <MockedTestProvider
@@ -60,6 +67,7 @@ export const Overview: Story = () => (
                         result: {
                             data: codeHostsResult(
                                 {
+                                    __typename: 'BatchChangesCodeHost',
                                     credential: null,
                                     externalServiceKind: ExternalServiceKind.GITHUB,
                                     externalServiceURL: 'https://github.com/',
@@ -77,6 +85,7 @@ export const Overview: Story = () => (
                                     },
                                 },
                                 {
+                                    __typename: 'BatchChangesCodeHost',
                                     credential: null,
                                     externalServiceKind: ExternalServiceKind.GITHUB,
                                     externalServiceURL: 'https://github.mycompany.com/',
@@ -86,6 +95,7 @@ export const Overview: Story = () => (
                                     commitSigningConfiguration: null,
                                 },
                                 {
+                                    __typename: 'BatchChangesCodeHost',
                                     credential: null,
                                     externalServiceKind: ExternalServiceKind.GITLAB,
                                     externalServiceURL: 'https://gitlab.com/',
@@ -95,6 +105,7 @@ export const Overview: Story = () => (
                                     commitSigningConfiguration: null,
                                 },
                                 {
+                                    __typename: 'BatchChangesCodeHost',
                                     credential: sshCredential(true),
                                     externalServiceKind: ExternalServiceKind.BITBUCKETSERVER,
                                     externalServiceURL: 'https://bitbucket.sgdev.org/',
@@ -104,6 +115,7 @@ export const Overview: Story = () => (
                                     commitSigningConfiguration: null,
                                 },
                                 {
+                                    __typename: 'BatchChangesCodeHost',
                                     credential: null,
                                     externalServiceKind: ExternalServiceKind.BITBUCKETCLOUD,
                                     externalServiceURL: 'https://bitbucket.org/',
@@ -123,13 +135,13 @@ export const Overview: Story = () => (
                     },
                 ]}
             >
-                <BatchChangesSettingsArea {...props} user={{ id: 'user-id-1' }} />
+                <BatchChangesSettingsArea {...props} user={{ id: 'user-id-1' } as UserAreaUserFields} />
             </MockedTestProvider>
         )}
     </WebStory>
 )
 
-export const ConfigAdded: Story = () => (
+export const ConfigAdded: StoryFn = () => (
     <WebStory>
         {props => (
             <MockedTestProvider
@@ -146,6 +158,7 @@ export const ConfigAdded: Story = () => (
                         result: {
                             data: codeHostsResult(
                                 {
+                                    __typename: 'BatchChangesCodeHost',
                                     credential: sshCredential(false),
                                     externalServiceKind: ExternalServiceKind.GITHUB,
                                     externalServiceURL: 'https://github.com/',
@@ -163,6 +176,7 @@ export const ConfigAdded: Story = () => (
                                     },
                                 },
                                 {
+                                    __typename: 'BatchChangesCodeHost',
                                     credential: sshCredential(false),
                                     externalServiceKind: ExternalServiceKind.GITLAB,
                                     externalServiceURL: 'https://gitlab.com/',
@@ -172,6 +186,7 @@ export const ConfigAdded: Story = () => (
                                     commitSigningConfiguration: null,
                                 },
                                 {
+                                    __typename: 'BatchChangesCodeHost',
                                     credential: sshCredential(false),
                                     externalServiceKind: ExternalServiceKind.BITBUCKETSERVER,
                                     externalServiceURL: 'https://bitbucket.sgdev.org/',
@@ -181,6 +196,7 @@ export const ConfigAdded: Story = () => (
                                     commitSigningConfiguration: null,
                                 },
                                 {
+                                    __typename: 'BatchChangesCodeHost',
                                     credential: sshCredential(false),
                                     externalServiceKind: ExternalServiceKind.BITBUCKETCLOUD,
                                     externalServiceURL: 'https://bitbucket.org/',
@@ -200,7 +216,7 @@ export const ConfigAdded: Story = () => (
                     },
                 ]}
             >
-                <BatchChangesSettingsArea {...props} user={{ id: 'user-id-2' }} />
+                <BatchChangesSettingsArea {...props} user={{ id: 'user-id-2' } as UserAreaUserFields} />
             </MockedTestProvider>
         )}
     </WebStory>
@@ -208,7 +224,7 @@ export const ConfigAdded: Story = () => (
 
 ConfigAdded.storyName = 'Config added'
 
-export const RolloutWindowsConfigurationStory: Story = () => (
+export const RolloutWindowsConfigurationStory: StoryFn = () => (
     <WebStory>
         {props => (
             <MockedTestProvider
@@ -225,6 +241,7 @@ export const RolloutWindowsConfigurationStory: Story = () => (
                         result: {
                             data: codeHostsResult(
                                 {
+                                    __typename: 'BatchChangesCodeHost',
                                     credential: sshCredential(false),
                                     externalServiceKind: ExternalServiceKind.GITHUB,
                                     externalServiceURL: 'https://github.com/',
@@ -242,6 +259,7 @@ export const RolloutWindowsConfigurationStory: Story = () => (
                                     },
                                 },
                                 {
+                                    __typename: 'BatchChangesCodeHost',
                                     credential: sshCredential(false),
                                     externalServiceKind: ExternalServiceKind.GITLAB,
                                     externalServiceURL: 'https://gitlab.com/',
@@ -251,6 +269,7 @@ export const RolloutWindowsConfigurationStory: Story = () => (
                                     commitSigningConfiguration: null,
                                 },
                                 {
+                                    __typename: 'BatchChangesCodeHost',
                                     credential: sshCredential(false),
                                     externalServiceKind: ExternalServiceKind.BITBUCKETSERVER,
                                     externalServiceURL: 'https://bitbucket.sgdev.org/',
@@ -260,6 +279,7 @@ export const RolloutWindowsConfigurationStory: Story = () => (
                                     commitSigningConfiguration: null,
                                 },
                                 {
+                                    __typename: 'BatchChangesCodeHost',
                                     credential: sshCredential(false),
                                     externalServiceKind: ExternalServiceKind.BITBUCKETCLOUD,
                                     externalServiceURL: 'https://bitbucket.org/',
@@ -279,7 +299,7 @@ export const RolloutWindowsConfigurationStory: Story = () => (
                     },
                 ]}
             >
-                <BatchChangesSettingsArea {...props} user={{ id: 'user-id-2' }} />
+                <BatchChangesSettingsArea {...props} user={{ id: 'user-id-2' } as UserAreaUserFields} />
             </MockedTestProvider>
         )}
     </WebStory>

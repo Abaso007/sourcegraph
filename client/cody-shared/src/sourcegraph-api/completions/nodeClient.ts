@@ -2,53 +2,14 @@ import http from 'http'
 import https from 'https'
 
 import { isError } from '../../utils'
+import { customUserAgent } from '../graphql/client'
 import { toPartialUtf8String } from '../utils'
 
 import { SourcegraphCompletionsClient } from './client'
 import { parseEvents } from './parse'
-import { CompletionParameters, CompletionCallbacks, CompletionResponse } from './types'
+import type { CompletionCallbacks, CompletionParameters } from './types'
 
 export class SourcegraphNodeCompletionsClient extends SourcegraphCompletionsClient {
-    public async complete(params: CompletionParameters, abortSignal: AbortSignal): Promise<CompletionResponse> {
-        const log = this.logger?.startCompletion(params)
-
-        const headers = new Headers(this.config.customHeaders as HeadersInit)
-        if (this.config.accessToken) {
-            headers.set('Authorization', `token ${this.config.accessToken}`)
-        }
-
-        const response = await fetch(this.codeCompletionsEndpoint, {
-            method: 'POST',
-            body: JSON.stringify(params),
-            headers,
-            signal: abortSignal,
-        })
-
-        const result = await response.text()
-
-        // When rate-limiting occurs, the response is an error message
-        if (response.status === 429) {
-            throw new Error(result)
-        }
-
-        try {
-            const response = JSON.parse(result) as CompletionResponse
-
-            if (typeof response.completion !== 'string' || typeof response.stopReason !== 'string') {
-                const message = `response does not satisfy CodeCompletionResponse: ${result}`
-                log?.onError(message)
-                throw new Error(message)
-            } else {
-                log?.onComplete(response)
-                return response
-            }
-        } catch (error) {
-            const message = `error parsing response CodeCompletionResponse: ${error}, response text: ${result}`
-            log?.onError(message)
-            throw new Error(message)
-        }
-    }
-
     public stream(params: CompletionParameters, cb: CompletionCallbacks): () => void {
         const log = this.logger?.startCompletion(params)
 
@@ -64,6 +25,7 @@ export class SourcegraphNodeCompletionsClient extends SourcegraphCompletionsClie
                 headers: {
                     'Content-Type': 'application/json',
                     ...(this.config.accessToken ? { Authorization: `token ${this.config.accessToken}` } : null),
+                    ...(customUserAgent ? { 'User-Agent': customUserAgent } : null),
                     ...this.config.customHeaders,
                 },
                 // So we can send requests to the Sourcegraph local development instance, which has an incompatible cert.
@@ -119,6 +81,7 @@ export class SourcegraphNodeCompletionsClient extends SourcegraphCompletionsClie
 
                     const parseResult = parseEvents(bufferText)
                     if (isError(parseResult)) {
+                        // eslint-disable-next-line no-console
                         console.error(parseResult)
                         return
                     }
@@ -134,6 +97,16 @@ export class SourcegraphNodeCompletionsClient extends SourcegraphCompletionsClie
                 })
             }
         )
+
+        request.on('error', e => {
+            let message = e.message
+            if (message.includes('ECONNREFUSED')) {
+                message =
+                    'Could not connect to Cody. Please ensure that Cody app is running or that you are connected to the Sourcegraph server.'
+            }
+            log?.onError(message)
+            cb.onError(message)
+        })
 
         request.write(JSON.stringify(params))
         request.end()
